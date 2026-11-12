@@ -37,6 +37,7 @@
 //  * Link Play (0x71000376c4 true): the list is local UI, but the key guide is left as the game has it and nothing is filtered.
 #include "ui/pkp_craft.h"
 #include "core/pkp_guest.h"
+#include "core/pkp_items.h"
 #include "ui/pkp_key_guide.h"
 #include "core/pkp_layout.h"
 #include "core/pkp_settings.h"
@@ -73,9 +74,7 @@ constexpr uint64_t kAsk = 0x1131700;             // (mode, char* buf, size, opti
 constexpr uint64_t kAlloc = 0x1121ee8;           // (allocator, 3, size, align, tag*)
 constexpr uint64_t kAllocator = 0x3483d58;
 using layout::kOnline;
-using layout::kItemTable;
 constexpr uint64_t kRecipeTable = 0x330;
-constexpr uint64_t kNameOf = 0xa34e1c;           // (name id, form) -> UTF-8
 using layout::kLanguage;
 constexpr uint64_t kChildren = 0x48, kState = 0xa8;
 constexpr uint32_t kGridElem = 0x1fd, kDetailElem = 0x1ff;
@@ -177,20 +176,9 @@ const std::string& recipe_name(::Ctx* c, uint16_t rid) {
     if (lang != g.lang) { g.names.clear(); g.lang = lang; }
     auto it = g.names.find(rid);
     if (it != g.names.end()) return it->second;
-    std::string name;
     const uint64_t rec = table_rec(c, kRecipeTable, rid);
     const uint16_t item = rec && ok(rec + 0x12, 2) ? rd<uint16_t>(rec + 0x12) : 0;
-    const uint64_t irec = item ? table_rec(c, kItemTable, item) : 0;
-    const uint16_t nid = irec && ok(irec + 0x22, 2) ? rd<uint16_t>(irec + 0x22) : 0;
-    if (nid && nid <= 3000) {
-        const uint64_t p = call(c, g.base + kNameOf, nid, 0);
-        for (uint64_t a = p; p && name.size() < 200 && ok(a, 1); ++a) {
-            const char ch = rd<char>(a);
-            if (!ch) break;
-            name += ch;
-        }
-    }
-    return g.names.emplace(rid, fold(name)).first->second;
+    return g.names.emplace(rid, fold(items::name(c, g.base, item))).first->second;
 }
 
 uint64_t child(::Ctx* c, uint64_t screen, uint32_t elem, uint16_t want) {

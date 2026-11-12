@@ -34,6 +34,7 @@
 #include "nxrt/present_timing.h"
 #include "vk_gauges.h"
 #include "nvn_gpu_internal.h"
+#include "nvn_thread.h"
 #include "nvn_impl.h"
 #include "nvn_pipeline.h"
 #include "nvn_present_pass.h"
@@ -145,7 +146,7 @@ struct Gpu {
     Counters ctr;
 
     // render thread
-    std::thread th;
+    BigThread th;
     std::mutex qmu;
     std::condition_variable qcv;
     std::deque<std::function<void()>> queue;
@@ -164,7 +165,7 @@ struct Gpu {
     std::mutex unsupported_mu;
     std::map<std::string, uint64_t> unsupported;
 
-    // [nvn] submit_thread (default auto: on under Wine): the vkQueueSubmit2 of flush_batch and the present's submit + vkQueuePresentKHR run on this one
+    // [nvn] submit_thread (default auto: on on Linux): the vkQueueSubmit2 of flush_batch and the present's submit + vkQueuePresentKHR run on this one
     // FIFO worker (nvn_submit_worker.h) instead of the render thread. null = off: everything inline, as before.
     //
     // What depends on a submission having been made, and how each is kept right with the worker:
@@ -1573,12 +1574,13 @@ bool bring_up(gfx::Device& dev, gfx::Renderer* rend, FrameLimiter* limiter, bool
     gp->limiter = limiter;
     extras::present_timing_set_limiter(limiter);
     gp->keep_aspect = keep_aspect;
-    const bool wine = host_is_wine();
-    {   // [nvn] submit_batch: auto = frame under Wine (each kernel submission walks the imported pools again, flush_batch), 1 elsewhere.
+    const bool linux_kernel = host_is_linux();
+    {   // [nvn] submit_batch: auto = frame on Linux (RADV revalidates every imported userptr BO of a submission, so each one walks the
+        // imported pools again: flush_batch), 1 elsewhere.
         // frame: one kernel submission per frame, the present's; N: flush every N submissions and whenever the render thread idles.
         std::string b = nxrt::config_get_str("nvn", "submit_batch", "auto");
-        const std::string how = b == "auto" ? (wine ? "auto, Wine" : "auto, not Wine") : b;
-        if (b == "auto") b = wine ? "frame" : "1";
+        const std::string how = b == "auto" ? (linux_kernel ? "auto, Linux" : "auto, not Linux") : b;
+        if (b == "auto") b = linux_kernel ? "frame" : "1";
         gp->frame_batch = b == "frame";
         gp->batch_max = gp->frame_batch ? kSlots / 2 : static_cast<uint32_t>(std::clamp<int64_t>(std::atoll(b.c_str()), 1, kSlots / 2));
         NXLOG_I(kTag, "submit_batch %s (%s)", gp->frame_batch ? "frame" : std::to_string(gp->batch_max).c_str(), how.c_str());
@@ -1593,11 +1595,11 @@ bool bring_up(gfx::Device& dev, gfx::Renderer* rend, FrameLimiter* limiter, bool
         gp->poll_flush_ms = ms;
         NXLOG_I(kTag, "poll_flush %s%s", ms < 0 ? "defer" : ms > 0 ? (std::to_string(ms) + " ms").c_str() : "now", gp->frame_batch ? "" : " (submit_batch is not frame)");
     }
-    {   // [nvn] gpu_split_ms: see split_piece. auto = 2 under Wine (with submit_batch = frame the GPU got a submission only with the present),
+    {   // [nvn] gpu_split_ms: see split_piece. auto = 2 on Linux (with submit_batch = frame the GPU got a submission only with the present),
         // off elsewhere; 0 = off; 0.25-50 = the recording time of one piece. [nvn] gpu_split_pieces: the most pieces one submission is cut into
         // (2-8, default 3). Each piece is one more kernel submission (on the submit thread), so the budget keeps them to a few per frame.
         const std::string v = nxrt::config_get_str("nvn", "gpu_split_ms", "auto");
-        double ms = v == "auto" ? (wine ? 2.0 : 0.0) : std::atof(v.c_str());     // junk reads as 0 = off
+        double ms = v == "auto" ? (linux_kernel ? 2.0 : 0.0) : std::atof(v.c_str());     // junk reads as 0 = off
         ms = ms > 0.0 ? std::clamp(ms, 0.25, 50.0) : 0.0;
         if (ms > 0.0) {     // the replay checks the budget with the TSC (ft::tsc, a few ns; it is read at many ops between passes)
             const double ns_per_tick = static_cast<double>(ft::tsc_to_ns(1ull << 32)) / 4294967296.0;    // calibrates once (~20 ms) if no one has
@@ -1607,7 +1609,7 @@ bool bring_up(gfx::Device& dev, gfx::Renderer* rend, FrameLimiter* limiter, bool
         if (ms > 0.0)
             NXLOG_I(kTag, "gpu_split %.2f ms (%s), at most %u pieces: a submission still being recorded after that long is sent to the GPU in pieces, cut between passes",
                     ms, v.c_str(), gp->split_max);
-        else NXLOG_I(kTag, "gpu_split off (%s%s)", v.c_str(), v == "auto" ? ", not Wine" : "");
+        else NXLOG_I(kTag, "gpu_split off (%s%s)", v.c_str(), v == "auto" ? ", not Linux" : "");
     }
     g = gp;
     if (!dev.features().timeline_semaphore) {
@@ -1657,12 +1659,12 @@ bool bring_up(gfx::Device& dev, gfx::Renderer* rend, FrameLimiter* limiter, bool
     static const bool report_registered = (diag_add_report(gpu_report), true);   // the freeze dump shows the GPU state
     (void)report_registered;
     register_counter_gauges();
-    // [nvn] submit_thread: see Gpu::sw. Started before the render thread, so every submission of the run goes through it. auto = on under
-    // Wine, where a kernel submission can block the render thread for most of a frame (Steam Deck: 25-41 ms, 26 -> 53 fps with the
+    // [nvn] submit_thread: see Gpu::sw. Started before the render thread, so every submission of the run goes through it. auto = on on
+    // Linux, where a kernel submission can block the render thread for most of a frame (Steam Deck: 25-41 ms, 26 -> 53 fps with the
     // worker), off on Windows, where it measured no change.
     const std::string st = nxrt::config_get_str("nvn", "submit_thread", "auto");
-    const bool st_on = st == "auto" ? wine : (st == "on" || st == "1" || st == "true");
-    if (!st_on) NXLOG_I(kTag, "submit_thread off (%s%s)", st.c_str(), st == "auto" ? ", not Wine" : "");
+    const bool st_on = st == "auto" ? linux_kernel : (st == "on" || st == "1" || st == "true");
+    if (!st_on) NXLOG_I(kTag, "submit_thread off (%s%s)", st.c_str(), st == "auto" ? ", not Linux" : "");
     if (st_on) {
         gp->sw = std::make_unique<SubmitWorker>();
         gp->sw->start([] {
@@ -1675,12 +1677,12 @@ bool bring_up(gfx::Device& dev, gfx::Renderer* rend, FrameLimiter* limiter, bool
                 job();
             });
         }, [] { submit_drain(); });
-        NXLOG_I(kTag, "submit_thread on (%s%s): submissions and presents go to the queue from the nvn-submit thread", st.c_str(), st == "auto" ? ", Wine" : "");
+        NXLOG_I(kTag, "submit_thread on (%s%s): submissions and presents go to the queue from the nvn-submit thread", st.c_str(), st == "auto" ? ", Linux" : "");
     }
-    {   // [nvn] one_submit: see Gpu::one_submit. auto = on under Wine with submit_batch = frame and the worker; on | split | off.
+    {   // [nvn] one_submit: see Gpu::one_submit. auto = on on Linux with submit_batch = frame and the worker; on | split | off.
         const std::string o = nxrt::config_get_str("nvn", "one_submit", "auto");
         const bool can = gp->frame_batch && gp->sw;
-        int v = o == "auto" ? (wine && can ? 1 : 0) : (o == "on" || o == "1" || o == "true") ? 1 : o == "split" ? 2 : 0;
+        int v = o == "auto" ? (linux_kernel && can ? 1 : 0) : (o == "on" || o == "1" || o == "true") ? 1 : o == "split" ? 2 : 0;
         if (v && !can) {
             NXLOG_W(kTag, "one_submit %s: no effect without submit_batch = frame and submit_thread on", o.c_str());
             v = 0;
@@ -1690,10 +1692,10 @@ bool bring_up(gfx::Device& dev, gfx::Renderer* rend, FrameLimiter* limiter, bool
         gp->park_hold = std::chrono::milliseconds(hold);
         if (v) NXLOG_I(kTag, "one_submit %s (%s): batch flushes still queued at the present go in its vkQueueSubmit2 (%s), hold %lld ms",
                        v == 2 ? "split" : "on", o.c_str(), v == 2 ? "own VkSubmitInfo2" : "one VkSubmitInfo2", static_cast<long long>(hold));
-        else NXLOG_I(kTag, "one_submit off (%s%s)", o.c_str(), o == "auto" ? (can ? ", not Wine" : ", no frame batch or no submit thread") : "");
+        else NXLOG_I(kTag, "one_submit off (%s%s)", o.c_str(), o == "auto" ? (can ? ", not Linux" : ", no frame batch or no submit thread") : "");
     }
     sync_wake_start();
-    gp->th = std::thread(render_loop);
+    gp->th.start("nvn-render", 32, render_loop);
     // wait for the thread id to be published
     for (int i = 0; i < 1000 && gp->tid == std::thread::id(); ++i) std::this_thread::sleep_for(std::chrono::milliseconds(1));
     if (rend) {

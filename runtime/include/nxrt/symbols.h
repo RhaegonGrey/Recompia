@@ -25,6 +25,13 @@ size_t symbols_load_map(const char* map_path = nullptr);
 std::string symbols_map_path();   // the file the last symbols_load_map read ("" when none)
 // Same for any text (tests): `module_base` is the load address the Rva+Base column assumed (preferred base).
 size_t symbols_load_map_text(const std::string& text);
+size_t symbols_count();
+#if !defined(_WIN32)
+// Fills the image table the POSIX lookup uses: call once, before any thread starts (crash_install does). POSIX has no linker
+// map, so the table is the whole symbolizer there, and it must be readable without dyld's lock (a faulting thread may hold it).
+void symbols_snapshot_images();
+uint64_t symbols_main_base();   // the main executable's load address (0 when the snapshot has not run)
+#endif
 // Resolve a host code address. Never throws, never allocates beyond the returned strings, safe to call from the crash handler
 // only when symbols_load_map has run earlier (the lookup itself allocates strings: the crash handler tolerates that).
 SymbolInfo symbols_lookup(uint64_t host_addr);

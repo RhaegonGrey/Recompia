@@ -104,6 +104,10 @@ void apply_frame_cap(const Settings& s) {
         log_frame_cap(cap, cap, 0.f, 0, "vsync off");
     }
     st.limiter.set_target_fps(cap);
+    // A frame limit the player set (a number, not auto and not unlimited) holds through loading screens too: on a Mac a 60 limit showed
+    // 110 fps for the first 16 s of every start, because boot loading unpaces the game on purpose. auto and unlimited keep the faster
+    // unpaced loading (nvn_replay's detector asks; frame_limiter_unpaced answers).
+    nxrt::frame_limiter_set_player_cap(s.display.fps_cap > 0);
     // Reflex / Anti-Lag pace to the same cap (remembered for a renderer that is created later), the game's ceiling included (set_max_fps)
     extras::lowlat_note_cap(st.limiter.effective_fps());
 }

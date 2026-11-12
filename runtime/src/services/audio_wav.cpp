@@ -4,6 +4,9 @@
 // at close(). Every patch flushes the data before it, so the sizes in the header never claim bytes that are not in the file.
 #include <algorithm>
 #include <condition_variable>
+#if !defined(_WIN32)
+#include "nx_os.h"   // _wfopen on POSIX: the wide path is converted to UTF-8
+#endif
 #include <cstdio>
 #include <deque>
 #include <mutex>

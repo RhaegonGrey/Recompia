@@ -46,6 +46,15 @@ check(pickNext(R[0], R, 'down') === 3, 'a down -> d');
 const side = [box(0, 0), { left: 200, top: -100, right: 300, bottom: 150 }, box(200, 200)];
 check(pickNext(side[0], side, 'right') === 1, 'right from a short control reaches the tall one that overlaps its row');
 
+// Browse's group chips wrap onto a second line; the first card's buttons sit below: a chip row is walked along, then down into the cards
+const chip = (x, y, w = 60) => ({ left: x, top: y, right: x + w, bottom: y + 28 });
+const C = [chip(0, 0), chip(70, 0, 110), chip(190, 0), chip(0, 40, 90), chip(100, 40)];   // All, Camera and photos, Looks / Quality of life, Gameplay
+const below = [{ left: 0, top: 100, right: 80, bottom: 130 }, { left: 90, top: 100, right: 190, bottom: 130 }];   // a card's Details and Mod page
+check(pickNext(C[0], C, 'right') === 1 && pickNext(C[1], C, 'right') === 2, 'chips: right walks the row');
+check(pickNext(C[1], C, 'down') === 3 || pickNext(C[1], C, 'down') === 4, 'chips: down from the first line reaches the second');
+check(pickNext(C[3], [...C, ...below], 'down') === 5, 'chips: down from the last line reaches the card');
+check(pickNext(C[4], [...C, ...below], 'up') === 1 || pickNext(C[4], [...C, ...below], 'up') === 0, 'chips: up goes back to the first line');
+
 // cycle
 check(cycle(0, 4, 1) === 1 && cycle(3, 4, 1) === 0 && cycle(0, 4, -1) === 3, 'cycle wraps');
 check(cycle(-1, 4, 1) === 0 && cycle(-1, 4, -1) === 3, 'cycle from nothing');

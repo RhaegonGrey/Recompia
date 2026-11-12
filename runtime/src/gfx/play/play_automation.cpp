@@ -52,8 +52,8 @@ bool key_sink(const char* name, bool down) {
     return true;
 }
 
-// @shot in a script: the renderer writes the next presented frame as a PNG; the call returns when the file exists (or after 5 s).
-bool screenshot_provider(const char* path, void*) {
+// The screenshot provider (nxrt/screenshot.h; @shot in a script, a mod's screenshot): the renderer writes the next presented frame as a PNG.
+bool screenshot_provider(const char* path, bool bare, void*) {
     G& st = g();
     if (!st.renderer || !path) return false;
     DeleteFileA(path);
@@ -61,9 +61,13 @@ bool screenshot_provider(const char* path, void*) {
     // The caller is the game's thread at a frame boundary, and the capture happens at the render thread's next end of frame, which
     // needs the game's next frame: waiting here for the file held every shot for the 5 s timeout. Wait only for an earlier request to
     // be taken (one capture path at a time), then return; the file is written on a worker and the test runner waits for it at exit.
-    for (int i = 0; i < 200 && st.renderer->capture_pending(); ++i) Sleep(5);
-    st.renderer->request_screenshot(path);
-    return true;
+    // A mod's (bare) request comes from a game thread inside a hook or an event: it never waits, a busy slot answers false at once.
+    const int tries = bare ? 1 : 200;
+    for (int i = 0; i < tries; ++i) {
+        if (st.renderer->request_screenshot(path, bare)) return true;
+        if (i + 1 < tries) Sleep(5);
+    }
+    return false;
 }
 
 // The self-test's window onto play mode: the same entry points the settings page uses.

@@ -10,18 +10,23 @@ use crate::paths::game_dir_of;
 use crate::readiness::readiness;
 use crate::{play, profiles, settings};
 
+/// `without_mods`: this one start runs without mods (the runtime's [mods] off, passed in the game's environment only).
 #[tauri::command]
-pub fn play(app: AppHandle) -> Result<(), String> {
+pub fn play(app: AppHandle, without_mods: Option<bool>) -> Result<(), String> {
     ensure_idle(&app, &[Need::Update, Need::Storage])?;
     let cfg = load_config(&app);
     let probe = readiness(&cfg);
-    let (Some(paths), "ready") = (probe.paths, probe.readiness.kind) else {
+    if probe.readiness.kind != "ready" {
         return Err(probe.readiness.detail);
-    };
+    }
     let dir = game_dir_of(&cfg);
-    settings::ensure_play_paths(&dir, &paths.exefs, &paths.romfs, &paths.romfs_base, &paths.aoc_dir)?;
+    // macOS: Set up wrote pkp.ini from the player's dump and there is no dump choice to apply here, so readiness carries no
+    // paths. Everywhere else they name the exefs and romfs to write.
+    if let Some(paths) = probe.paths {
+        settings::ensure_play_paths(&dir, &paths.exefs, &paths.romfs, &paths.romfs_base, &paths.aoc_dir)?;
+    }
     profiles::apply_active(&dir)?;
-    play::start(&app, &dir, &cfg)
+    play::start(&app, &dir, &cfg, without_mods.unwrap_or(false))
 }
 
 #[tauri::command]

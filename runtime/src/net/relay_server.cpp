@@ -892,9 +892,9 @@ std::unique_ptr<RelayServer> RelayServer::start(const RelayServerOptions& opt, s
     }
     // No SO_EXCLUSIVEADDRUSE: it fails the bind while connections of an earlier run sit in TIME_WAIT (a host restarting the game within a
     // minute could not host); Windows' default already refuses a second bind over a live socket.
-    // Wine (Linux sockets): a listener bind fails on TIME_WAIT without SO_REUSEADDR, which there still refuses a live listener.
+    // Linux sockets (natively and under Wine): a listener bind fails on TIME_WAIT without SO_REUSEADDR, which there still refuses a live listener.
     auto bind_any = [&](SOCKET s, bool listener) {
-        if (listener && host_is_wine()) {
+        if (listener && host_is_linux()) {
             const BOOL on = TRUE;
             ::setsockopt(s, SOL_SOCKET, SO_REUSEADDR, reinterpret_cast<const char*>(&on), sizeof on);
         }
@@ -1053,7 +1053,9 @@ std::vector<FoundRelay> discover_relays(uint16_t port, int wait_ms) {
         fd_set r;
         FD_ZERO(&r);
         FD_SET(s, &r);
-        timeval tv{static_cast<long>(left / 1000000), static_cast<long>(left % 1000000)};
+        timeval tv{};
+        tv.tv_sec = static_cast<long>(left / 1000000);
+        tv.tv_usec = static_cast<decltype(tv.tv_usec)>(left % 1000000);   // long on Linux, int on Darwin
         const int k = ::select(0, &r, nullptr, nullptr, &tv);
         if (k < 0) break;
         if (k == 0) continue;   // the window is over (checked above)

@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "nxrt/game.h"
+#include "nxrt/fault_guard.h"
 #include "nxrt/log.h"
 #include "nxrt/write_watch.h"
 #include "tt_internal.h"
@@ -37,12 +38,8 @@ bool write_mem(uint64_t addr, const void* in, size_t n) {
     if (addr < 0x10000) return false;
     uint8_t probe[64];
     if (n > sizeof probe || !read_mem(addr, probe, n)) return false;
-    __try {          // a direct store: WriteProcessMemory costs tens of milliseconds for an address in the guest heap (see play_aim.cpp)
-        std::memcpy(reinterpret_cast<void*>(addr), in, n);
-        return true;
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        return false;
-    }
+    // a direct store: WriteProcessMemory costs tens of milliseconds for an address in the guest heap (see play_aim.cpp)
+    return nxrt::fault_guarded([&] { std::memcpy(reinterpret_cast<void*>(addr), in, n); }, nxrt::FaultCatch::Any);
 }
 }  // namespace detail
 }  // namespace nxrt::tt
@@ -174,7 +171,7 @@ bool peek_memory(const std::string& in_path, const std::string& out_path, std::s
 // ---- @poke: write guest memory (S26, development aid: restoring health after a death while a room is being worked out) ------------------------------
 // in: lines `addr [off ...] : hexbytes`. The pointers are followed like @peek; the bytes are stored with a read-back check of the page first.
 static void guarded_copy(uint64_t dst, const void* src, size_t n) {
-    __try { std::memcpy(reinterpret_cast<void*>(dst), src, n); } __except (EXCEPTION_EXECUTE_HANDLER) { }
+    nxrt::fault_guarded([&] { std::memcpy(reinterpret_cast<void*>(dst), src, n); }, nxrt::FaultCatch::Any);
 }
 
 bool poke_memory(const std::string& in_path, std::string* err) {

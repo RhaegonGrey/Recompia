@@ -102,12 +102,18 @@ Public headers are `runtime/include/nxrt/*.h`. A shared helper exists once; use 
 | High-resolution time | `nxrt/qpc.h` |
 | A counter or timer shown in diagnostics | `GaugeHook` in `nxrt/gauge.h` |
 | Winsock start-up | `ensure_winsock()` in `src/net/win_sock.h` |
-| "Is this Wine/Proton?" | `host_is_wine()` in `nxrt/host_device.h` |
+| "Is the host kernel Linux?" (natively, or under Wine) | `host_is_linux()` in `nxrt/host_device.h`; ask the kernel or driver, never "is this Wine" |
+| "Which machine is this?" (handheld, Steam Deck) | `host_is_handheld()`, `host_is_steam_deck()` in `nxrt/host_device.h` |
 | Ini value or env override | `nxrt/config.h` (`config_get_*`; env `NXRT_<SECTION>_<KEY>` wins) |
 | A fact about the game (name, log file, ini file, defaults) | `game::info()` in `nxrt/game.h` |
 | Hook a guest address | `nxrt/hooks.h` (in the game layer: always through a `HookSet`) |
 | Vulkan object boilerplate | `src/gfx/extras/vk_make.h` |
 | FNV-1a | `src/gfx/nvn/nvn_fnv.h` (persisted hashes must not change) |
+| A short message over the game's picture | `nxrt/notices.h` (drawn by the overlay; one per source) |
+| A screenshot of the next presented frame, from code with no renderer | `nxrt/screenshot.h` (play mode registers the provider) |
+| Which keyboard keys are held, outside the event pump | `nxrt/key_state.h` (fed by play mode; SDL scancodes) |
+| A colour matrix over the final picture | `nxrt/color_matrix.h` (read by the output pass) |
+| An HTTP(S) request from the host | `nxrt::http` in `src/net/http_client.h` (https only, no redirects, no cookies) |
 
 Source tree (`runtime/src/`), one job per file; the name says the job:
 
@@ -116,7 +122,10 @@ Source tree (`runtime/src/`), one job per file; the name says the job:
 - `services/` one HLE service family per file group: `network_*` (bsd, dns, nifm, ssl, social), `ldn_*` (local play: LAN, relay,
   Link Play), `misc_*` (aoc, nfc, olsc, system, ...), `audio_*`, `hid*`, `fs*`, `vi_*`, `am`, `acc`, `time`.
   `*_internal.h` headers are for that family's files only.
-- `net/` sockets, virtual network, relay wire format, lobby.
+- `net/` sockets, virtual network, relay wire format, lobby, `http_client` (the host's HTTP(S) client).
+- `mods/` the Modtopia mods host (public entry points in `nxrt/mods.h`; the game supplies its folders through `game::Info::mods`):
+  `modtopia_host.cpp` (start, hook points, events), `modtopia_backend.cpp` (the `MtBackend` the Modtopia core calls),
+  `modtopia_input.cpp` (the mods' pads), sharing `mods_internal.h`.
 - `gfx/nvn/` NVN on Vulkan. `api_*.cpp` are the guest-facing NVN entry points. The command replay is `nvn_replay.cpp` (the loop) plus
   `nvn_replay_{pass,textures,compute,bind,upscale,query,draw,trace}.cpp`, sharing `nvn_replay_internal.h`. GPU textures are
   `nvn_gpu_texture.cpp` plus `_upload`, `_readback`, `_sparse`, `_views`, `_debug`. Pipelines: `nvn_pipeline.cpp`, `nvn_gpl.cpp`.
@@ -148,7 +157,10 @@ One module per feature, in four folders: `core/` (the base every module builds o
 | `core/pkp_tables.h` | the one data-table row lookup |
 | `core/pkp_text.h` | the one "set a widget's text to our string" |
 | `ui/pkp_key_guide.{h,cpp}` | the key guide widget: owns its hooks; features register as `Client`s |
-| `ui/pkp_options.cpp` | our rows in the game's own Settings screen |
+| `ui/pkp_options.cpp` | our rows in the game's own Settings screen: the slot state machine and the game's hooks |
+| `ui/pkp_options_model.{h,cpp}` | what a tab is to that screen (`TabModel`); `StaticTab` serves the row tables of `pkp_options_internal.h` |
+| `ui/pkp_options_capture.{h,cpp}` | the key capture behind capture rows |
+| `ui/pkp_options_mods.cpp` | the Mods tab: the Modtopia mods, through the core's own list and settings API |
 | `ui/pkp_menu*.cpp` | the menu mouse pointer (scan, pick, draw, in-game) |
 | `input/pkp_play.cpp` + `render/pkp_render_size`, `pkp_render_targets`, `pkp_aspect`, `pkp_wide_text`, `pkp_frame_rate`, `input/pkp_mouse_camera`, `pkp_mouse_mode` | play-mode hooks, one subsystem per file |
 

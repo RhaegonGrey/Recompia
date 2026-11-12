@@ -227,10 +227,12 @@ uint64_t FrameLimiter::begin_frame() {
 }
 
 namespace {
-std::atomic<bool> g_unpaced{false};
+std::atomic<bool> g_unpaced{false};      // the loading detector's request
+std::atomic<bool> g_player_cap{false};   // a frame limit of the player's own is in force
 }
 void frame_limiter_set_unpaced(bool on) { g_unpaced.store(on, std::memory_order_relaxed); }
-bool frame_limiter_unpaced() { return g_unpaced.load(std::memory_order_relaxed); }
+bool frame_limiter_unpaced() { return g_unpaced.load(std::memory_order_relaxed) && !g_player_cap.load(std::memory_order_relaxed); }
+void frame_limiter_set_player_cap(bool set) { g_player_cap.store(set, std::memory_order_relaxed); }
 
 uint64_t FrameLimiter::begin_frame_nohook() {
     Impl& s = *impl_;

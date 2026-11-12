@@ -5,6 +5,7 @@
 #include <atomic>
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstdio>
 #include <chrono>
 #include <cstdlib>
@@ -287,6 +288,7 @@ struct CmdState {   // owner: nvn_replay_draw.cpp (begin_draw); the other ops se
     bool vb_bound_in_cb = false;     // vkCmdBindVertexBuffers2 was called in this command buffer (dynamic strides need one)
     bool prog_writes = false;        // the bound program has storage buffer or storage image bindings
     int8_t fs_tonemap = -1;          // the bound fragment shader is the tone-map shader (extras::hdr_is_tonemap); -1: not asked since kPipe
+    int8_t fs_stretch = -1;          // the bound fragment shader is the game's scene stretch shader (extras::is_scene_stretch); -1: not asked
     DynShadow dsh;                   // bind_coalesce: the dynamic state, vertex and index buffers last sent in this command buffer
     VbShadow vbsh[16];
     IbShadow ibsh;
@@ -369,6 +371,11 @@ struct QueryState {   // owner: nvn_replay_query.cpp; the ops are in run_list (R
 extern QueryState g_q;
 bool occ_ready();
 extern nxrt::GaugeCounter g_gauge_pipeline_binds;
+// ---- the game's 2D left out (nvn_replay_ui.cpp, nxrt/ui_layer.h) -------------------------------------------------------------------
+// After ensure_pass: true while the 2D is hidden and this draw is part of it (vertex inputs, colour target 0 a presented texture). One
+// relaxed atomic load while nothing is hidden.
+bool ui_skip_draw(const ShaderInfo* vs);
+void ui_shutdown();   // replay_shutdown: the presented textures are let go
 // ---- frame trace and debug aids (nvn_replay_trace.cpp) ---------------------------------------------------------------------------
 // Their state is private to the trace module. The draw and dispatch paths test one flag per site (both false in play) and call in.
 extern bool g_trace;         // this submission is traced ([nvn] trace_frame, trace_after_fs, trace_sec, a script request)
@@ -439,7 +446,7 @@ inline uint32_t read_handle_word(int stage, int bank, int word) {
 }
 
 // [nvn] resolve_once (default on): a texture handle is resolved (pool entries -> texture, view, sampler) once and every later binding
-// of it takes that result. prepare_textures, vol3d_prepare, samples_depth_target, feedback_prepare, scene_upscale_for_draw,
+// of it takes that result. prepare_textures, vol3d_prepare, samples_depth_target, feedback_prepare, tonemap_for_draw, scene_stretch_for_draw,
 // sampled_descriptor and support_for_draw call resolve_texture each (2 shared locks and a view + sampler copy: up to 5 per binding per
 // draw), and most draws bind handles an earlier draw bound.
 // What resolve_texture returns is a function of: the handle (S.tex of the stage, or the word in the uniform block's memory), the bound
@@ -632,15 +639,17 @@ const uint8_t* cpu_view(uint64_t addr, uint64_t size);   // below
 uint64_t indirect_index_span(const P_DrawIndirect& p);
 void out_before_op(const RecordReader& r);
 BufRef shadow_of(uint64_t addr, VkDeviceSize size, const BufRef& host, bool writes);
-// The scene upscaler's override of one draw (S14), set by scene_upscale_for_draw and read by build_set_resolved; it lives until the next
-// draw that sets up descriptors. tex/view: the upscaled scene replaces the small one. near: Nearest (#232), the inputs of the tone-map
-// draw that hold the reduced scene, sampled with the nearest sampler (nearest_scene_for_draw).
+// The override of one draw's sampled input, set by tonemap_for_draw (SMAA, temporal upscaling) or scene_stretch_for_draw (the scene
+// upscalers, #571) and read by build_set_resolved; it lives until the next draw that sets up descriptors. tex/view: the processed image
+// replaces that texture. near: Nearest, textures sampled with the nearest sampler (clamp to edge) instead of their own.
+// stretch_armed: a tone-map draw was seen since the last scene stretch, so the next stretch-shaped draw is the frame's (clear() keeps it).
 constexpr uint32_t kSuNearMax = 8;
 struct SceneOverride {   // owner: nvn_replay_upscale.cpp
     Texture* tex = nullptr;
     VkImageView view = VK_NULL_HANDLE;
     Texture* near[kSuNearMax] = {};
     uint32_t near_n = 0;
+    bool stretch_armed = false;
     bool nearest(const Texture* t) const {
         for (uint32_t i = 0; i < near_n; ++i) if (near[i] == t) return true;
         return false;
@@ -662,7 +671,8 @@ bool tsr_jitter(uint32_t* words, size_t n_words);
 void support_for_draw(const ProgLayout& pl, bool compute);
 void bind_sets(const ProgLayout& pl, VkPipelineBindPoint bp);
 void temporal_gbuffer_note();
-void scene_upscale_for_draw(const ProgLayout& pl);
+void tonemap_for_draw(const ProgLayout& pl);
+void scene_stretch_for_draw(const ProgLayout& pl);
 void do_draw_arrays(const P_DrawArrays& p);
 void do_draw_elements(const P_DrawElements& p);
 struct QuadArgs {

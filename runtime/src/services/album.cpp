@@ -12,7 +12,7 @@
 // Switch 2, 0x400 on Switch 1), buffer 1 the image (both MapAlias in-buffers). Reply: the 0x20-byte ApplicationAlbumEntry. Cmds 203
 // (Ex0, no ApplicationData) and 210 (Ex2, a user id list) share the raw layout and take the image as their largest buffer.
 // ApplicationAlbumEntry layout from libnx caps.h (CapsApplicationAlbumEntry v1: u64 size, u64 hash, AlbumFileDateTime, storage,
-// content, pad, unk_x1f = 1). The PNG is encoded by the Windows Imaging Component.
+// content, pad, unk_x1f = 1). The PNG is encoded by the Windows Imaging Component on Windows and by ImageIO on macOS.
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
@@ -27,11 +27,26 @@
 #include "nxrt/log.h"
 #include "services_internal.h"
 
+#if defined(_WIN32)
 #include <windows.h>
 #include <wincodec.h>
 
 #pragma comment(lib, "windowscodecs")
 #pragma comment(lib, "ole32")
+#else
+#include <windows.h>   // the POSIX shim (src/os/compat/windows.h): GetModuleFileNameA and the exe path helpers
+
+#include <climits>
+#include <cstdlib>
+
+#if defined(__APPLE__)
+#include <CoreFoundation/CoreFoundation.h>
+#include <CoreGraphics/CoreGraphics.h>
+#include <ImageIO/ImageIO.h>
+#else
+#include "miniz.h"   // the zlib stream inside the PNG (third_party/miniz)
+#endif
+#endif
 
 namespace nxrt::services {
 
@@ -47,10 +62,18 @@ constexpr uint8_t kStorageSd = 1;       // CapsAlbumStorage_Sd
 constexpr uint8_t kContentScreenshot = 0;
 
 std::filesystem::path exe_dir() {
+#if defined(_WIN32)
     wchar_t buf[MAX_PATH];
     const DWORD n = GetModuleFileNameW(nullptr, buf, MAX_PATH);
     if (n == 0 || n >= MAX_PATH) return std::filesystem::current_path();
     return std::filesystem::path(buf).parent_path();
+#else
+    // The shim answers this for every POSIX target (_NSGetExecutablePath on macOS, /proc/self/exe on Linux).
+    char buf[PATH_MAX];
+    const DWORD n = GetModuleFileNameA(nullptr, buf, sizeof buf);
+    if (n == 0 || n >= sizeof buf) return std::filesystem::current_path();
+    return std::filesystem::path(buf).parent_path();
+#endif
 }
 
 // UTF-8 text <-> path (C++20 keeps UTF-8 in char8_t): file names with non-ASCII characters keep their bytes in paths and in the log.
@@ -75,6 +98,7 @@ std::filesystem::path album_dir() {
 }
 
 bool album_write_png(const std::filesystem::path& file, const uint8_t* rgba, uint32_t width, uint32_t height, std::string* err) {
+#if defined(_WIN32)
     // 24-bit BGR rows (the album keeps no alpha; the game's alpha channel is whatever its render target held).
     const size_t stride = static_cast<size_t>(width) * 3;
     std::vector<uint8_t> bgr(stride * height);
@@ -124,6 +148,113 @@ bool album_write_png(const std::filesystem::path& file, const uint8_t* rgba, uin
         return false;
     }
     return true;
+#elif defined(__APPLE__)
+    // ImageIO writes the PNG. The album keeps no alpha (the game's alpha channel is whatever its render target held), so
+    // the RGBA rows become RGBX and the CGImage is built with kCGImageAlphaNoneSkipLast.
+    const size_t stride = static_cast<size_t>(width) * 4;
+    std::vector<uint8_t> rgbx(stride * height);
+    for (size_t i = 0, n = static_cast<size_t>(width) * height; i < n; ++i) {
+        rgbx[i * 4 + 0] = rgba[i * 4 + 0];
+        rgbx[i * 4 + 1] = rgba[i * 4 + 1];
+        rgbx[i * 4 + 2] = rgba[i * 4 + 2];
+        rgbx[i * 4 + 3] = 0xFF;
+    }
+    CGColorSpaceRef space = CGColorSpaceCreateDeviceRGB();
+    CGDataProviderRef provider = CGDataProviderCreateWithData(nullptr, rgbx.data(), rgbx.size(), nullptr);
+    CGImageRef image = provider ? CGImageCreate(width, height, 8, 32, stride, space, kCGImageAlphaNoneSkipLast | kCGBitmapByteOrderDefault, provider,
+                                               nullptr, false, kCGRenderingIntentDefault)
+                                : nullptr;
+    bool ok = false;
+    if (image) {
+        const std::string path = file.string();
+        CFURLRef url = CFURLCreateFromFileSystemRepresentation(nullptr, reinterpret_cast<const UInt8*>(path.data()),
+                                                               static_cast<CFIndex>(path.size()), false);
+        if (url) {
+            CGImageDestinationRef dest = CGImageDestinationCreateWithURL(url, CFSTR("public.png"), 1, nullptr);
+            if (dest) {
+                CGImageDestinationAddImage(dest, image, nullptr);
+                ok = CGImageDestinationFinalize(dest);
+                CFRelease(dest);
+            }
+            CFRelease(url);
+        }
+        CGImageRelease(image);
+    }
+    if (provider) CGDataProviderRelease(provider);
+    CGColorSpaceRelease(space);
+    if (!ok) {
+        if (err) *err = "ImageIO PNG write failed";
+        std::error_code ec;
+        std::filesystem::remove(file, ec);
+        return false;
+    }
+    return true;
+#else
+    // Linux: zlib writes the PNG (third_party/miniz, the same library the save repair uses). One IDAT of unfiltered rows,
+    // 8-bit RGB, no interlacing: the album keeps no alpha, so the RGBA rows lose theirs.
+    const size_t stride = static_cast<size_t>(width) * 3;
+    std::vector<uint8_t> raw((stride + 1) * height);
+    for (size_t y = 0; y < height; ++y) {
+        uint8_t* row = raw.data() + y * (stride + 1);
+        row[0] = 0;   // filter type 0: none
+        for (size_t x = 0; x < width; ++x) {
+            const uint8_t* px = rgba + (y * width + x) * 4;
+            row[1 + x * 3 + 0] = px[0];
+            row[1 + x * 3 + 1] = px[1];
+            row[1 + x * 3 + 2] = px[2];
+        }
+    }
+    mz_ulong zlen = mz_compressBound(static_cast<mz_ulong>(raw.size()));
+    std::vector<uint8_t> z(zlen);
+    if (mz_compress2(z.data(), &zlen, raw.data(), static_cast<mz_ulong>(raw.size()), MZ_BEST_SPEED) != MZ_OK) {
+        if (err) *err = "zlib compression failed";
+        return false;
+    }
+    z.resize(zlen);
+
+    auto be32 = [](uint8_t* d, uint32_t v) {
+        d[0] = static_cast<uint8_t>(v >> 24);
+        d[1] = static_cast<uint8_t>(v >> 16);
+        d[2] = static_cast<uint8_t>(v >> 8);
+        d[3] = static_cast<uint8_t>(v);
+    };
+    std::vector<uint8_t> png{0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A};
+    auto chunk = [&](const char type[4], const std::vector<uint8_t>& data) {
+        uint8_t head[8];
+        be32(head, static_cast<uint32_t>(data.size()));
+        std::memcpy(head + 4, type, 4);
+        png.insert(png.end(), head, head + 8);
+        png.insert(png.end(), data.begin(), data.end());
+        mz_ulong crc = mz_crc32(mz_crc32(0, nullptr, 0), head + 4, 4);
+        if (!data.empty()) crc = mz_crc32(crc, data.data(), data.size());
+        uint8_t tail[4];
+        be32(tail, static_cast<uint32_t>(crc));
+        png.insert(png.end(), tail, tail + 4);
+    };
+    std::vector<uint8_t> ihdr(13);
+    be32(ihdr.data(), width);
+    be32(ihdr.data() + 4, height);
+    ihdr[8] = 8;    // bit depth
+    ihdr[9] = 2;    // colour type: truecolour (RGB)
+    chunk("IHDR", ihdr);
+    chunk("IDAT", z);
+    chunk("IEND", {});
+
+    std::FILE* f = std::fopen(file.string().c_str(), "wb");
+    if (!f) {
+        if (err) *err = std::string("cannot create ") + file.string();
+        return false;
+    }
+    const bool ok = std::fwrite(png.data(), 1, png.size(), f) == png.size();
+    const bool closed = std::fclose(f) == 0;
+    if (!ok || !closed) {
+        if (err) *err = "PNG write failed";
+        std::error_code ec;
+        std::filesystem::remove(file, ec);
+        return false;
+    }
+    return true;
+#endif
 }
 
 namespace {

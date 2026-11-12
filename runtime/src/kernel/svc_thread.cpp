@@ -246,6 +246,7 @@ void svc_signal_event(::Ctx* c) {              // w0 event handle (writable)
     auto e = handle_as<KEvent>(static_cast<uint32_t>(X(c, 0)));
     if (!e) return svc_ret(c, kInvalidHandle);
     e->state->signaled = true;
+    NXLOG_D("svc", "SignalEvent(0x%x)", static_cast<uint32_t>(X(c, 0)));
     notify_waitable_changed();
     svc_ret(c, kOk);
 }

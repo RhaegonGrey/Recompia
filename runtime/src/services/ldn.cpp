@@ -4,6 +4,9 @@
 #include "ldn.h"
 
 #include <memory>
+#if !defined(_WIN32)
+#include "nx_os.h"   // _wfopen on POSIX: the wide path is converted to UTF-8
+#endif
 
 #include "nxrt/log.h"
 #include "nxrt/services.h"

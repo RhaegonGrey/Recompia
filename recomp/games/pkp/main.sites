@@ -60,7 +60,6 @@ midhook 0x7101fd93e8
 midhook 0x7101fd8b44
 midhook 0x7101fd9024
 midhook 0x7101fd90b8
-midhook 0x7101fd8b48
 midhook 0x7101fd9028
 midhook 0x7101fd90bc
 # G2S request/poll/deferred-create probes (work/re/g2s_load.md §8-11)
@@ -75,11 +74,9 @@ midhook 0x7101ff41bc
 midhook 0x7101ff5cf0
 midhook 0x7101ff5e54
 midhook 0x7101ff5e9c
-midhook 0x7101ff7d60
 midhook 0x7101ff0468
 midhook 0x7101ff054c
 midhook 0x7101ff0550
-midhook 0x7102043c40
 # +4 variants (entry midhooks may not fire) and deferred push
 midhook 0x7101ff7d68
 midhook 0x7102043c44

@@ -1,11 +1,13 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // nvnQueuePresentTexture: the window texture is drawn into the Renderer's frame (swapchain or headless image) and presented.
 // The shell's FrameLimiter, when given, paces the frame (begin_frame before the image is acquired).
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <vector>
 
+#include "nxrt/color_matrix.h"
 #include "nxrt/config.h"
 #include "nxrt/diag.h"
 #include "nxrt/extras.h"
@@ -76,6 +78,7 @@ void present_on_render_thread(Window* w, int index, bool again) {
     { NXFT("present.frame_tick"); diag_frame_tick(); }
     if (!rend || !pp) return;
     { NXFT("present.tex"); if (!tex_gpu(t)) return; }
+    replay_note_presented(t);   // the draws into it after the picture are the game's 2D (nxrt/ui_layer.h)
     extras::pace_note_present();
     // [nvn] one_submit: batch flushes the worker has not started yet ride in this present's submission instead of a kernel submission of
     // their own; whatever is still taken when this function ends without submitting goes back to the worker
@@ -126,12 +129,15 @@ void present_on_render_thread(Window* w, int index, bool again) {
         tu.present_out_h.store(static_cast<int>(fi.extent.height), std::memory_order_relaxed);
     }
     pp->set_flip_y(window_origin_mode() == NVN_WINDOW_ORIGIN_MODE_LOWER_LEFT);   // the game runs with the lower-left origin (mode 0)
-    // HDR scene / HDR swapchain / FSR 1 or NIS / picture controls go through the output pass (S14); everything else is the plain present pass of the SDR path
+    // HDR scene / HDR swapchain / FSR 1 or NIS / picture controls / a colour matrix go through the output pass (S14); everything else is the
+    // plain present pass of the SDR path
     const extras::HdrState hs = extras::hdr_state();
     const extras::PictureLive pic = extras::picture_live();
+    float cm[12];
+    const bool cm_on = color_matrix::get(cm);
     extras::OutputPass* op = output_pass();
     if (op && (hs.scene_hdr || hs.output != extras::OutputKind::Sdr8 || extras::upscale_mode() == extras::UpscaleMode::Fsr1 ||
-               extras::upscale_mode() == extras::UpscaleMode::Nis || pic.active)) {
+               extras::upscale_mode() == extras::UpscaleMode::Nis || pic.active || cm_on)) {
         extras::OutputParams prm;
         prm.src = src;
         prm.src_extent = VkExtent2D{e.width, e.height};
@@ -150,6 +156,8 @@ void present_on_render_thread(Window* w, int index, bool again) {
         prm.pic[1] = pic.saturation;
         prm.pic[2] = pic.black;
         prm.pic[3] = pic.gamma;
+        prm.color_matrix = cm_on;
+        if (cm_on) std::copy(std::begin(cm), std::end(cm), prm.cm);
         op->record(fi.cmd, fi.view, rend->format(), fi.extent, prm);
     } else {
         pp->record(fi.cmd, fi.view, fi.extent, src, VkExtent2D{e.width, e.height}, crop, keep_aspect());

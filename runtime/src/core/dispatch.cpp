@@ -291,6 +291,10 @@ namespace {
 void call_thunk(::Ctx* c, Thunk& t) {
     const char* saved = t_hle_name;
     t_hle_name = t.name.c_str();
+    // The same name on the context: another thread (the crash report, the freeze watchdog) can read it while this host
+    // function is blocked, which is how a hang inside an HLE handler gets named without suspending the thread.
+    const char* saved_ctx_name = c->in_import;
+    c->in_import = t.name.c_str();
     // [hle] trace: the line is written after the handler ran, so it carries the result (x0) next to the arguments
     const HleTrace& tr = hle_trace();
     const bool traced = !tr.prefix.empty() && t.name.compare(0, tr.prefix.size(), tr.prefix) == 0;
@@ -335,6 +339,7 @@ void call_thunk(::Ctx* c, Thunk& t) {
                 static_cast<unsigned long long>(targs[0]), static_cast<unsigned long long>(targs[1]), static_cast<unsigned long long>(targs[2]),
                 static_cast<unsigned long long>(targs[3]), static_cast<unsigned long long>(lr(c)), static_cast<unsigned long long>(reg(c, 0)));
     t_hle_name = saved;
+    c->in_import = saved_ctx_name;
 }
 
 }  // namespace

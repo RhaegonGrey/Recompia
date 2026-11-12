@@ -19,11 +19,11 @@
 //! update alone: `.update/lock` is held for the whole update.
 //! The pure parts take plain paths and no AppHandle: the tests below build a fake install and run them.
 
+use crate::download;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use std::cmp::Ordering;
 use std::fs::{self, File, OpenOptions, TryLockError};
-use std::io::{self, Read, Write};
+use std::io::{self, Read};
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering::SeqCst};
@@ -45,17 +45,24 @@ const UPDATE_DIR: &str = ".update";
 const SUMS_ASSET: &str = "SHA256SUMS.txt";
 const MARKER: &str = "applying";
 const LOCK: &str = "lock";
-const RUNTIME_DLL: &str = "pkp_rt.dll";
 /// install_update's Err when the player cancelled, for the page to tell it from a failure.
 pub const CANCELLED: &str = "Update cancelled.";
 
 #[cfg(windows)]
 const ASSET_SUFFIX: &str = "-win64.zip";
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
+// The macOS release zip (launcher/scripts/make-mac.sh): PokopiaLauncher.app at its root, whose Contents/MacOS is the
+// launcher's own folder and so the install root the update is applied to.
+const ASSET_SUFFIX: &str = "-macos-arm64.zip";
+#[cfg(not(any(windows, target_os = "macos")))]
 const ASSET_SUFFIX: &str = "-linux-x64.tar.gz";
 #[cfg(windows)]
 const PACKAGE_LAUNCHER: &str = "PokopiaLauncher.exe";
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
+// The binary at the root of the release zip's PokopiaRecomp-<version>/ folder: that folder is the install root (exe_dir), so
+// the package replaces the launcher and tools/ in place, as on Windows and Linux.
+const PACKAGE_LAUNCHER: &str = "PokopiaLauncher";
+#[cfg(not(any(windows, target_os = "macos")))]
 const PACKAGE_LAUNCHER: &str = "PokopiaLauncher.AppImage";
 
 /// Top-level names that belong to the player. make-release.ps1 refuses to ship most of them; `apply` skips them all the same.
@@ -238,10 +245,16 @@ impl Channel {
     }
 }
 
-/// The API's answer without drafts and anything that does not link to github.com. Prereleases are kept here: `for_channel` decides.
+/// An alpha (`v0.12.0-alpha.1`) is an in-house test build: its release page is shared by hand, and no channel lists or offers it.
+fn in_house(tag: &str) -> bool {
+    tag.contains("-alpha.")
+}
+
+/// The API's answer without drafts, alphas and anything that does not link to github.com. Prereleases are kept here: `for_channel`
+/// decides.
 pub fn parse_releases(body: &[u8]) -> Result<Vec<GhRelease>, String> {
     let all: Vec<GhRelease> = serde_json::from_slice(body).map_err(|e| e.to_string())?;
-    Ok(all.into_iter().filter(|r| !r.draft && !r.tag_name.is_empty() && github(&r.html_url)).collect())
+    Ok(all.into_iter().filter(|r| !r.draft && !r.tag_name.is_empty() && !in_house(&r.tag_name) && github(&r.html_url)).collect())
 }
 
 /// The releases a channel sees. Stable drops prereleases, so for a Stable player nothing differs from before channels existed.
@@ -502,26 +515,6 @@ impl Throttle {
     }
 }
 
-/// Copies at most `size` + 1 bytes (one more shows an oversized file) to `to`, hashing them: (bytes, lower-case SHA-256).
-fn hash_copy(from: &mut dyn Read, to: &mut dyn Write, size: u64, cancel: &AtomicBool, progress: &mut dyn FnMut(u64)) -> Result<(u64, String), String> {
-    let (mut hash, mut n, mut buf) = (Sha256::new(), 0u64, vec![0u8; 1 << 16]);
-    let mut from = from.take(size.saturating_add(1));
-    loop {
-        if cancel.load(SeqCst) {
-            return Err(CANCELLED.into());
-        }
-        let k = from.read(&mut buf).map_err(|e| format!("The download failed: {}. Nothing was changed. Try again.", e))?;
-        if k == 0 {
-            break;
-        }
-        hash.update(&buf[..k]);
-        to.write_all(&buf[..k]).map_err(|e| format!("Could not save the update: {}. Nothing was changed.", e))?;
-        n += k as u64;
-        progress(n.min(size));
-    }
-    Ok((n, format!("{:x}", hash.finalize())))
-}
-
 /// The system's tar: bsdtar in System32 on Windows, which reads the zip too (never one found on PATH).
 fn tar() -> Command {
     #[cfg(windows)]
@@ -576,6 +569,8 @@ pub fn extract(dir: &Path, archive: &str, out: &str, cancel: &AtomicBool) -> Res
 
 /// `staged/PokopiaRecomp-<version>`, once it has the launcher and tools/build. Asked before the install is touched.
 pub fn find_package(staged: &Path, version: &str, launcher: &str) -> Result<PathBuf, String> {
+    // Every host's zip puts the same tree under PokopiaRecomp-<version>/: the launcher, tools/ and the runtime library. That
+    // folder is the install root, and an update replaces what is in it in place.
     let root = staged.join(format!("PokopiaRecomp-{}", version));
     if root.join(launcher).is_file() && root.join("tools").join("build").is_dir() {
         return Ok(root);
@@ -727,7 +722,7 @@ fn swap(job: &Job, undo: &mut Vec<Undo>, files: &[PathBuf], report: &mut dyn FnM
         step(&job.package.join(rel), &dst, undo, mover)?;
     }
     if let Some(dst) = &job.game_dll {
-        let src = job.root.join(RUNTIME_DLL);
+        let src = crate::host::runtime_lib(job.root);
         if src.is_file() {
             // possibly another drive, and the install keeps its own: a copy, with the old file set aside beside it
             let old = with_old(dst);
@@ -826,7 +821,7 @@ pub fn clean_start(root: &Path, old: &[PathBuf]) {
 
 /// The `.old` files of `launcher` and of a custom game folder.
 pub fn old_files(launcher: &Path, game_dir: &Path) -> Vec<PathBuf> {
-    vec![with_old(launcher), with_old(&game_dir.join(RUNTIME_DLL))]
+    vec![with_old(launcher), with_old(&crate::host::runtime_lib(game_dir))]
 }
 
 /// The update's flags. `busy` also keeps Play and Set up from starting under it.
@@ -883,7 +878,7 @@ pub struct Paths {
 /// The game's pkp_rt.dll when the game folder is not the install.
 fn game_dll(p: &Paths) -> Option<PathBuf> {
     let canon = |d: &Path| fs::canonicalize(d).unwrap_or_else(|_| d.to_path_buf());
-    let dll = p.game_dir.join(RUNTIME_DLL);
+    let dll = crate::host::runtime_lib(&p.game_dir);
     (canon(&p.game_dir) != canon(&p.install) && dll.is_file()).then_some(dll)
 }
 
@@ -974,7 +969,8 @@ fn stages(t: &Target, p: &Paths, st: &UpdateState, work: &Path, report: &mut dyn
     let resp = agent.get(&t.asset_url).call().map_err(|e| failed(e.to_string()))?;
     let save_failed = |e: io::Error| format!("Could not save the update: {}. Nothing was changed.", e);
     let mut out = File::create(&archive).map_err(save_failed)?;
-    let (n, got) = hash_copy(&mut resp.into_reader(), &mut out, t.size, &st.cancel, &mut |n| send("download", n, t.size))?;
+    let say = download::Said { read: &|e| format!("The download failed: {}. Nothing was changed. Try again.", e), write: &|e| format!("Could not save the update: {}. Nothing was changed.", e) };
+    let (n, got) = download::copy_checked(&mut resp.into_reader(), &mut out, t.size, &st.cancel, &mut |n| send("download", n, t.size), &say)?.ok_or(CANCELLED)?;
     out.sync_all().map_err(save_failed)?;
     drop(out);
     send("verify", 0, 1);
@@ -996,7 +992,33 @@ fn stages(t: &Target, p: &Paths, st: &UpdateState, work: &Path, report: &mut dyn
     ready()?;
     st.applying.store(true, SeqCst);
     let job = Job { root: &p.install, package: &package, work, launcher_name: PACKAGE_LAUNCHER, launcher: &p.launcher, game_dll: game_dll(p) };
-    apply(&job, &mut send)
+    let applied = apply(&job, &mut send)?;
+    // macOS: the package carries the runtime dylib twice (beside the launcher and in tools/build/sdk), so the player's copy
+    // follows the one the update replaced. Nothing is signed: the release zip is unsigned by design.
+    #[cfg(target_os = "macos")]
+    if let Err(e) = sync_runtime_lib(&p.install) {
+        let failed = undo_all(applied.0);
+        return Err(if failed.is_empty() { format!("{e} Nothing was changed.") } else { format!("{e} {}", rollback_message(&failed)) });
+    }
+    Ok(applied)
+}
+
+/// The package carries the runtime dylib twice: beside the launcher, and in tools/build/sdk, which is where Set up copies it
+/// from into the game folder. Bring the copies already on the player's disk along with the one the update replaced (an install
+/// made from an older bundle has the second one in Contents/Frameworks).
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))] // type-checked on every host
+fn sync_runtime_lib(root: &Path) -> Result<(), String> {
+    let Some(parent) = root.parent() else { return Ok(()) };
+    let src = root.join("tools").join("build").join("sdk").join("libpkp_rt.dylib");
+    if !src.is_file() {
+        return Ok(());
+    }
+    for dst in [root.join("libpkp_rt.dylib"), parent.join("Frameworks").join("libpkp_rt.dylib")] {
+        if dst.is_file() {
+            fs::copy(&src, &dst).map_err(|e| format!("Could not update the runtime library in {} ({e}).", dst.display()))?;
+        }
+    }
+    Ok(())
 }
 
 /// Starts the launcher now at `path` with `--updated`. host::command keeps a new AppImage from inheriting the old one's mount. A launcher
@@ -1060,6 +1082,10 @@ mod channel_tests {
         body = body.replacen(r#""draft":false,"prerelease":true"#, r#""draft":true,"prerelease":true"#, 1);
         let all = parse_releases(body.as_bytes()).unwrap();
         assert_eq!(all.len(), 1, "a draft never shows");
+        let body = format!("[{}]", [rel("v0.9.0-alpha.1", true), rel("v0.8.1-beta.1", true)].join(","));
+        let all = parse_releases(body.as_bytes()).unwrap();
+        assert_eq!(all.len(), 1, "an alpha never shows: it is an in-house build");
+        assert_eq!(all[0].tag_name, "v0.8.1-beta.1");
         let all = list_of(&[("v0.8.1-beta.2", true), ("v0.8.1-beta.1", true), ("v0.8.0", false)]);
         assert_eq!(for_channel(all, Channel::Testing).len(), 3);
     }
@@ -1168,5 +1194,45 @@ mod keep_tests {
     #[test]
     fn an_update_never_touches_the_players_save_backups() {
         assert!(KEEP.contains(&"save-backups") && KEEP.contains(&"save"), "the save and its backups stay through an update");
+    }
+
+    #[test]
+    fn a_macos_package_replaces_the_install_root_in_place() {
+        // what make-mac.sh zips: PokopiaRecomp-<version>/ with the launcher, tools/ and the runtime library at its root
+        let tmp = std::env::temp_dir().join(format!("nxrt-apply-macos-{}", std::process::id()));
+        let (install, staged, work) = (tmp.join("Contents").join("MacOS"), tmp.join("staged"), tmp.join("update"));
+        let package = staged.join("PokopiaRecomp-0.11.0");
+        fs::create_dir_all(package.join("tools").join("build")).unwrap();
+        fs::create_dir_all(install.join("tools").join("build")).unwrap();
+        fs::create_dir_all(&work).unwrap();
+        fs::write(package.join("PokopiaLauncher"), b"new launcher").unwrap();
+        fs::write(package.join("tools/build/pkp_build.py"), b"new tools").unwrap();
+        let launcher = install.join("PokopiaLauncher");
+        fs::write(&launcher, b"old launcher").unwrap();
+        fs::write(install.join("tools/build/pkp_build.py"), b"old tools").unwrap();
+        let root = find_package(&staged, "0.11.0", "PokopiaLauncher").unwrap();
+        let job = Job { root: &install, package: &root, work: &work, launcher_name: "PokopiaLauncher", launcher: &launcher, game_dll: None };
+        apply(&job, &mut |_, _, _| {}).unwrap();
+        assert_eq!(fs::read(&launcher).unwrap(), b"new launcher", "the launcher is replaced, not left beside a new tools/");
+        assert_eq!(fs::read(install.join("tools/build/pkp_build.py")).unwrap(), b"new tools");
+        let _ = fs::remove_dir_all(&tmp);
+    }
+    #[test]
+    fn the_runtime_library_follows_the_one_the_update_replaced() {
+        // both copies the package ships: beside the launcher, and the one in Contents/Frameworks an older bundle install has
+        let tmp = std::env::temp_dir().join(format!("nxrt-runtime-lib-{}", std::process::id()));
+        let root = tmp.join("PokopiaRecomp-0.12.0");
+        let frameworks = tmp.join("Frameworks");
+        fs::create_dir_all(root.join("tools").join("build").join("sdk")).unwrap();
+        fs::create_dir_all(&frameworks).unwrap();
+        let (new, beside, in_frameworks) =
+            (root.join("tools/build/sdk/libpkp_rt.dylib"), root.join("libpkp_rt.dylib"), frameworks.join("libpkp_rt.dylib"));
+        fs::write(&new, b"new").unwrap();
+        fs::write(&beside, b"old").unwrap();
+        fs::write(&in_frameworks, b"old").unwrap();
+        assert!(sync_runtime_lib(&root).is_ok());
+        assert_eq!(fs::read(&beside).unwrap(), b"new", "the copy beside the launcher is the updated one");
+        assert_eq!(fs::read(&in_frameworks).unwrap(), b"new", "and so is an older bundle install's copy");
+        let _ = fs::remove_dir_all(&tmp);
     }
 }

@@ -608,7 +608,12 @@ void sync_glyphs_locked(State& s) {
                 s.patches.fetch_add(1, std::memory_order_relaxed);
                 NXLOG_I(kTag, "kbm prompt %s: icon %s", kSlotName[i], target.c_str());
             } else {
-                NXLOG_W(kTag, "kbm prompt %s: the atlas patch failed", kSlotName[i]);
+                gfx::GuestTexInfo fi;
+                if (gfx::guest_texture_info(tex, &fi))
+                    NXLOG_W(kTag, "kbm prompt %s: the atlas patch failed (texture #%u, NVN format %u, %ux%u, %u levels, %s%s)", kSlotName[i], fi.id,
+                            fi.format, fi.width, fi.height, fi.levels, fi.bc7 ? "BC7" : "not BC7", fi.srgb ? ", sRGB" : "");
+                else
+                    NXLOG_W(kTag, "kbm prompt %s: the atlas patch failed (texture is gone)", kSlotName[i]);
                 g.tex = 0;
             }
         }

@@ -24,6 +24,20 @@ struct SaveFailures {
 };
 SaveFailures save_failures();
 const char* save_failure_reason(uint32_t host_error);   // "the disk is full", ... (for the notice)
+
+// What a mod loader asks of the file system (the mods host, nxrt/mods.h). Any thread.
+// Folders laid over the game's RomFS below [fs] romfs_mod, index 0 highest: the same path in two layers is served from the earlier one,
+// folders merge. They apply to the RomFS the game opens; once it has opened it they are fixed (false, and nothing changes). Folders that
+// cannot be layered over the game's files are left out with an error at the first open, and the game starts without them.
+bool set_romfs_overlays(const std::vector<std::string>& roots);
+// The game's own RomFS files ([fs] romfs over [fs] romfs_base, no mod folder), by RomFS path ("a/b.bin", relative): a file's size, -1
+// when the game has none; up to n bytes of it from offset into buf, how many were read (fewer only at its end), -1 on an error. The file
+// table is built on first use and kept until romfs_game_release().
+int64_t romfs_game_file_size(const std::string& path);
+int64_t romfs_game_read(const std::string& path, uint64_t offset, void* buf, uint64_t n);
+void romfs_game_release();
+// fn runs after every successful Commit of a save data file system, on the committing thread (the game's). One listener; null: none.
+void set_save_commit_listener(void (*fn)());
 }  // namespace fsapi
 
 // ---- am (am.cpp): console state changes from the host --------------------------------------------------------------------------------
@@ -92,8 +106,8 @@ constexpr uint16_t kVariantMask = 0x7000;
 void set_session_variant(uint8_t variant, const char* what);
 uint8_t session_variant();
 // Co-op mods: more opt-in mods a game module has on, by name, for [net] protocol = native only. The co-op module's mods fingerprint, which
-// peers compare before a join, is the session variant's name followed by these names in this order (none counted while no variant is
-// set); a name must be byte for byte what the other builds use. Empty: none. Set it like the variant; any thread.
+// peers compare before a join, is the session variant's name (while a variant is set) followed by these names in this order; nothing
+// (0) when both are empty. A name must be byte for byte what the other builds use. Empty: none. Set it like the variant; any thread.
 void set_coop_mods(const std::vector<std::string>& names);
 std::vector<std::string> coop_mods();
 // Whether ldn:u speaks [net] protocol = native (the default).

@@ -10,6 +10,9 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstddef>
+#if !defined(_WIN32)
+#include "nx_os.h"   // _wfopen on POSIX: the wide path is converted to UTF-8
+#endif
 #include <cstdio>
 #include <cstring>
 #include <atomic>
@@ -53,8 +56,9 @@ namespace nxrt::services::ldn_impl {
 // coop_uid_load). mode = off or an invalid setting: local wireless off (the Link Play backend's answers with no lobby).
 // What peers compare before a join: main's build id (first 16 hex digits) and a mods fingerprint. The fingerprint is
 // coop_mods_add(0, name) of the session variant's name (services_api.h ldnapi; Pokopia's "Interact everywhere" while armed, the same
-// name pokopia-native adds as COOP_INTERACT_MOD), 0 without one. The variant's bits 12..14 of the local communication version are a
-// Link Play (relay) thing and are not sent here: the game's version goes out as the game gave it.
+// name pokopia-native adds as COOP_INTERACT_MOD) while one is set, then the co-op mods below; 0 when there is neither. The variant's
+// bits 12..14 of the local communication version are a Link Play (relay) thing and are not sent here: the game's version goes out as the
+// game gave it.
 // The game module's co-op mods (ldnapi::set_coop_mods) follow the variant's name in its order: Pokopia's Story co-op
 // (games/pkp/core/pkp_linkplay.cpp) adds COOP_STORY_MOD's name after the Interact one, so both on give pokopia-native's fingerprint
 // c75a2da0380038c1.
@@ -131,13 +135,19 @@ const char* coop_hook_build(void*) {
 uint64_t coop_hook_mods(void*, char* what, size_t n) {
     std::string name;
     std::vector<std::string> mods;
-    if (!own_variant(&name, &mods) || name.empty()) return 0;
-    // pokopia-native's coop_hmods order: the cheats (none here), the variant's name, then the game module's co-op mods in its order
-    uint64_t h = coop_mods_add(0, name.c_str());
-    std::string shown = name;
+    if (!own_variant(&name, &mods)) name.clear();   // the variant's name is kept for the log while none is set: it counts only when one is
+    if (name.empty() && mods.empty()) return 0;
+    // pokopia-native's coop_hmods order: the cheats (none here), the variant's name (when one is set), then the game module's co-op mods in
+    // its order (its own features, then the Modtopia gameplay mods, which count with or without a variant)
+    uint64_t h = 0;
+    std::string shown;
+    if (!name.empty()) {
+        h = coop_mods_add(h, name.c_str());
+        shown = name;
+    }
     for (const std::string& m : mods) {
         h = coop_mods_add(h, m.c_str());
-        shown += ", " + m;
+        shown += (shown.empty() ? "" : ", ") + m;
     }
     std::snprintf(what, n, "%s", shown.c_str());
     return h;

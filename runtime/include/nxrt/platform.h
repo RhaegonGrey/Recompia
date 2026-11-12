@@ -25,7 +25,7 @@ bool create_window(const WindowDesc& desc);   // Vulkan-capable window (SDL_WIND
 void destroy_window();
 bool has_window();
 void* native_window();                        // SDL_Window*
-void* native_hwnd();                          // the Win32 HWND of the window (null when there is none)
+void* native_hwnd();                          // the native window handle: HWND on Windows, NSView* on macOS (null when there is none)
 void set_window_title(const char* title);
 void pixel_size(int* w, int* h);              // client size in pixels (0, 0 while minimised)
 bool set_window_size(int w, int h);           // windowed size in screen coordinates

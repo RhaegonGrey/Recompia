@@ -36,6 +36,13 @@ pub struct Config {
     pub window: Option<WindowPlace>,
     /// Which releases the launcher offers: "stable" (the default) or "testing" (prereleases built from the testing branch). update.rs Channel.
     pub channel: String,
+    /// Once per launcher start, update the installed mods from the mod hub (mods_update.rs). Off unless the player switches it on.
+    pub mods_auto_update: bool,
+    /// The player unlocked the Community Achievements mod (mods_lock.rs): it may be switched off or removed, and the launcher no longer
+    /// installs or switches it on by itself. Locked unless the player unlocks it.
+    pub achievements_unlocked: bool,
+    /// The player unlocked the mod's sharing setting (mods_lock.rs): it may be switched off. Locked unless the player unlocks it.
+    pub achievements_sharing_unlocked: bool,
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
@@ -72,8 +79,13 @@ pub fn get_config(app: AppHandle) -> Config {
 
 #[tauri::command]
 pub fn save_config(app: AppHandle, config: Config) -> Result<(), String> {
-    let text = serde_json::to_string_pretty(&config).map_err(|e| e.to_string())?;
-    settings::write_atomic(&config_path(&app)?, &text).map_err(|e| format!("cannot save launcher settings: {}", e))
+    store_config(&app, &config)
+}
+
+/// Writes launcher.json (the page's save_config, and a command that changes one option of its own).
+pub fn store_config(app: &AppHandle, config: &Config) -> Result<(), String> {
+    let text = serde_json::to_string_pretty(config).map_err(|e| e.to_string())?;
+    settings::write_atomic(&config_path(app)?, &text).map_err(|e| format!("cannot save launcher settings: {}", e))
 }
 
 /// The install's online salt, made and saved the first time it is needed. None: it could not be saved, so no online ID is used (an ID

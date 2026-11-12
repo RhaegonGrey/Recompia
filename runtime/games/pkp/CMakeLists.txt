@@ -31,6 +31,8 @@ if(TARGET nxrt_gfx)
         "${_pkp}/core/pkp_game.cpp"
         "${_pkp}/core/pkp_linkplay.cpp"
         "${_pkp}/core/pkp_save_uuid.cpp"
+        "${_pkp}/core/pkp_mods.cpp"
+        "${_pkp}/core/pkp_mods_notice.cpp"
         "${_pkp}/core/pkp_pokemon_cap.cpp"
         "${_pkp}/core/pkp_resident_census.cpp"
         "${_pkp}/core/pkp_settings.cpp"
@@ -62,12 +64,18 @@ if(TARGET nxrt_gfx)
         "${_pkp}/ui/pkp_menu_pick.cpp"
         "${_pkp}/ui/pkp_menu_in_game.cpp"
         "${_pkp}/ui/pkp_options.cpp"
+        "${_pkp}/ui/pkp_options_model.cpp"
+        "${_pkp}/ui/pkp_options_controller.cpp"
+        "${_pkp}/ui/pkp_options_capture.cpp"
+        "${_pkp}/ui/pkp_options_mods.cpp"
         "${_pkp}/ui/pkp_options_rows.cpp"
         "${_pkp}/ui/pkp_options_time.cpp"
+        "${_pkp}/ui/pkp_options_items.cpp"
         "${_pkp}/ui/pkp_key_guide.cpp"
         "${_pkp}/ui/pkp_title.cpp"
         "${_pkp}/ui/pkp_sort.cpp"
         "${_pkp}/ui/pkp_craft.cpp"
+        "${_pkp}/ui/pkp_item_edit.cpp"
         "${_pkp}/ui/pkp_time.cpp")
     if(NXRT_TESTTOOLS)
         target_sources(nxrt_game_pkp PRIVATE

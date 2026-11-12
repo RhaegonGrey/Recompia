@@ -310,6 +310,10 @@ const GAMEPLAY = {
   inventory_sort: { label: t('Sort button in the bag and containers') },
   inventory_autosort: { label: t('Sort each time the bag opens') },
   craft_search: { label: t('Search in the crafting screen') },
+  item_editor: {
+    label: t('Item editor (experimental)'),
+    after: [{ id: 'item_editor_note', type: 'note', when: isOn('item_editor'), note: () => ({ text: t('Adds an Items tab to the game\'s Settings screen where you change how many of an item in your bag you hold. Off during Link Play. Back up your save first.') }) }],
+  },
   pokemon_cap_50: {
     label: t('More Pokémon in town'),
     after: [{ id: 'pokemon_cap_note', type: 'note', when: isOn('pokemon_cap_50'), note: () => ({ text: t('Experimental. Visitors and temporary spawns share the game\'s 64 slots with your residents, so a high number leaves them less room.') }) }],
@@ -395,7 +399,15 @@ export const SECTIONS = [
               { value: '133', label: t('1440p') }, { value: '200', label: t('2160p') },
             ],
           },
-          { id: 'keep_aspect', label: t('Keep 16:9 picture'), type: 'toggle', ...fromSchema(controls('display', 'keep_aspect')) },
+          {
+            // [display] aspect: the runtime writes a preset back as W:H (write_aspect in play_config_table.cpp)
+            id: 'aspect', label: t('Aspect ratio'), type: 'select', ...fromSchema(controls('display', 'aspect')),
+            options: [
+              { value: 'auto', label: t('Automatic') }, { value: '16:9', label: t('16:9') }, { value: '16:10', label: t('16:10') },
+              { value: '21:9', label: t('21:9') }, { value: '32:9', label: t('32:9') },
+            ],
+          },
+          { id: 'keep_aspect', label: t('Letterbox instead of stretching'), type: 'toggle', ...fromSchema(controls('display', 'keep_aspect')) },
         ],
       },
       {
@@ -766,6 +778,11 @@ export const SECTIONS = [
             id: 'repair', label: t('Repair and reset'), type: 'info',
             value: t('Settings, caches and old copies. You see what changes first.'),
             actions: (env) => [{ act: 'repair-open', label: t('Repair and reset'), icon: 'wrench', disabled: env.gameBusy || env.updating || env.taskBusy }],
+          },
+          {
+            id: 'without_mods', label: t('Start without mods'), type: 'info',
+            value: t('Starts the game once without mods. Your mods and their settings stay as they are.'),
+            actions: (env) => [{ act: 'play-without-mods', label: t('Start without mods'), icon: 'play', disabled: !env.canPlay }],
           },
           {
             id: 'repair_undo', label: t('Undo last repair'), type: 'info', when: (v, env) => !!env.repairBackup,

@@ -46,6 +46,7 @@ export async function render(el, ctx) {
   let setupOut = null;     // setupFindings(): [{ level, title, detail, fix }]
   let friendsOut = null;   // friendRows(): { ok, note, rows }
   let busy = '';           // 'probe' | 'setup-check' | 'friends' while one runs
+  let gameplayMods = [];   // "id@version" of the Modtopia mods that change gameplay and are on (Mods page): every player needs them
 
   // commits run one at a time, in the order the player made them: a blur, then the click that caused it
   let tail = Promise.resolve();
@@ -111,10 +112,13 @@ export async function render(el, ctx) {
   function sharedHtml() {
     if (!live()) return '';
     const exp = `<span class="chip lp-exp">${esc(t('Experimental'))}</span>`;
+    const mods = gameplayMods.length
+      ? `<div class="banner info">${icon('puzzle')}<div class="grow">${esc(t('Your mods that change gameplay: {mods}. Everyone in the session needs the same ones.', { mods: gameplayMods.join(', ') }))}</div></div>`
+      : '';
     return group(t('Same for everyone'), [
       row(t('Visitors can build everywhere'), exp + toggle('lp-interact', ui.interact || ui.story, { disabled: ui.story })),
       row(t('Visitors can talk to story characters'), exp + toggle('lp-story', ui.story)),
-    ]);
+    ]) + mods;
   }
 
   function lanHtml() {
@@ -617,5 +621,6 @@ export async function render(el, ctx) {
   checkFormat();
   draw();
   enter();
+  api.modsList().then((v) => { gameplayMods = v.gameplay; patch(part('lp-shared'), sharedHtml()); }).catch(() => {});
   return () => clearInterval(timer);
 }

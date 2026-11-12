@@ -50,12 +50,15 @@ Address space (`include/nxrt/memory.h`):
 | Region | Base | Size |
 |---|---|---|
 | Main module image (`kMainBase`) | 0x7100000000 | per module, at its lifted address |
-| HLE thunks (`kHleBase`) | 0x7400000000 | 0x1000000 (16 MiB) |
+| Remote region (`kRemoteBase`) | 0x7200000000 | 0x100000000 (4 GiB) |
+| Alias views (`kAliasBase`) | 0x7300000000 | 0x200000000 (8 GiB) |
 | SDK modules (`kSdkBase`) | 0x7500000000 | per module |
 | Heap view (`kHeapBase`) | 0x7800000000 | 0x200000000 (8 GiB maximum) |
-| Alias views (`kAliasBase`) | 0x7A00000000 | 0x200000000 (8 GiB) |
 | Guest thread stacks (`kStackBase`) | 0x7C00000000 | 0x100000000 (4 GiB) |
 | Kernel region (`kKernelBase`) | 0x7E00000000 | 0x100000000 (4 GiB) |
+| HLE thunks (`kHleBase`) | 0x7F00000000 | 0x1000000 (16 MiB) |
+
+On macOS the whole span 0x7000000000-0x8200000000 is reserved in the executable's Mach-O header as a zero-fill `__GUEST` segment, because libmalloc's xzone allocator takes ~24 GiB of it at random addresses before `main` runs; see `docs/macos-port.md`.
 
 ## Configuration
 

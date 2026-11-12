@@ -70,6 +70,12 @@ void set_sink(std::shared_ptr<AudioSink> s);          // replaces the active sin
 // a WAV tee (make_wav_tee).
 std::shared_ptr<AudioSink> sink();
 std::shared_ptr<AudioSink> make_xaudio2_sink();       // src/services/audio_xaudio2.cpp; nullptr when XAudio2 is unavailable
+// The CoreAudio sink (src/services/audio_coreaudio.cpp): an AudioUnit on the default output device, or on [audio] device. macOS only;
+// on Windows and Linux the "coreaudio" name is not a sink name.
+std::shared_ptr<AudioSink> make_coreaudio_sink();
+// The SDL3 sink (src/services/audio_sdl3.cpp): a device-bound audio stream on the default output device, or on [audio] device.
+// Linux only, and nullptr when the build has no SDL3 (no graphics shell); it is also the platform's output-device list.
+std::shared_ptr<AudioSink> make_sdl3_sink();
 // A simulated device: consumes queued frames at the sample rate (times 1 + skew_ppm / 1e6) on the host clock, counts the times it
 // ran dry and the lowest and highest queue level. No output. [audio] sink = paced ([audio] paced_ppm sets the skew); what the tests and
 // the underrun checks run on when no audio device is present. src/services/audio_paced.cpp.
@@ -80,6 +86,16 @@ std::shared_ptr<AudioSink> make_paced_sink(double skew_ppm = 0.0);
 // named <stem>.1<ext>, <stem>.2<ext>, and so on. The WAV header is patched about once per second of audio and at close().
 // src/services/audio_wav.cpp.
 std::shared_ptr<AudioSink> make_wav_tee(std::shared_ptr<AudioSink> inner, const std::string& path);
+
+// Extra voices mixed under the game's own output (a mod's sound): kExtraVoices of them, each PCM16 stereo at 48000 Hz with a one-second
+// buffer. Any thread. The sink sink() picks is wrapped in make_voice_mixer, which adds the queued frames of every voice to each write of
+// the audio services, as many as the game writes, while the output runs at 48000 Hz in stereo or 5.1 (front left and right); at another
+// rate they are left out. The output's volume and mute apply to them too. src/services/audio_voices.cpp.
+constexpr int kExtraVoices = 8;
+uint32_t extra_voice_write(int voice, const int16_t* stereo, uint32_t frames);   // frames taken (0: its buffer is full)
+uint32_t extra_voice_queued(int voice);                                          // frames not played yet
+void extra_voice_clear(int voice);                                               // drops them
+std::shared_ptr<AudioSink> make_voice_mixer(std::shared_ptr<AudioSink> inner);
 
 // Writes 16-bit PCM WAV files. Stereo is WAVE_FORMAT_PCM; 6 channels is WAVE_FORMAT_EXTENSIBLE with channel mask 0x3F.
 // The header sizes are kept valid while the file is open, so a process that dies without close() still leaves a readable file.

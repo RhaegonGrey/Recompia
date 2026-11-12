@@ -1,0 +1,2 @@
+# The mappings are embedded byte for byte (CMakeLists.txt) and compared with the copies in the game folder: the same bytes on every checkout.
+mappings/*.toml text eol=lf

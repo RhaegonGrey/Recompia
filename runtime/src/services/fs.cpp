@@ -2,7 +2,8 @@
 // fsp-srv (S3c): the file system service of the application.
 //   * RomFS: OpenDataStorageByCurrentProcess returns an IStorage over a RomFS image synthesised from the loose game folder
 //     ([fs] romfs, default game/romfs; fs_romfs.h). The SDK parses the RomFS itself (nn::fs::MountRom), so the storage is byte addressed.
-//     OpenDataFileSystemByCurrentProcess serves the same folder as a read-only IFileSystem.
+//     OpenDataFileSystemByCurrentProcess serves the same folder as a read-only IFileSystem. Mod folders are layered over it: [fs] romfs_mod
+//     first, then the mod loaders' (fsapi::set_romfs_overlays).
 //   * Save data: account, device and cache saves live in folders under [fs] save_dir (default %APPDATA%\<game save_folder>\save, nxrt/game.h) with the journal
 //     semantics of fs_volume.h: writes are invisible to the committed state until IFileSystem::Commit.
 //   * SD card, game card, BIS: absent (the results of a console without them).
@@ -10,6 +11,7 @@
 // The commit/recovery design is smo-recomp runtime/fs/nnfs.c (GPL-3.0), see fs_volume.h.
 #define _SILENCE_CXX20_U8PATH_DEPRECATION_WARNING
 #include <algorithm>
+#include <atomic>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
@@ -49,6 +51,11 @@ struct FsState {
     std::shared_ptr<fs::RomfsImage> rom;
     bool rom_failed = false;
     std::string rom_error;                                 // why the RomFS image could not be built
+    bool rom_served = false;                               // the game opened its RomFS: the layers are fixed from here on
+    std::vector<std::string> overlays;                     // fsapi::set_romfs_overlays: mod loaders' folders under [fs] romfs_mod
+    std::shared_ptr<fs::RomfsImage> game_rom;              // fsapi::romfs_game_*: the game's own files only (no mod folder)
+    bool game_rom_failed = false;
+    std::atomic<void (*)()> commit_listener{nullptr};      // fsapi::set_save_commit_listener
     std::map<uint64_t, std::shared_ptr<fs::RomfsImage>> aoc;   // add-on id -> its RomFS image (null: could not be built)
     std::map<std::string, std::weak_ptr<Volume>> saves;   // key -> open volume (one at a time per save)
     std::map<uint64_t, std::string> ids;                  // SaveDataId -> key, for the commands that name a save by id
@@ -225,9 +232,11 @@ struct OpenCount {
     GaugeCounter& c;
 };
 
-std::shared_ptr<Service> make_file(std::shared_ptr<fs::VFile> f, const std::string& path) {
+// `keep` holds the Volume alive for as long as the file: the game may close the file-system session (unmount) while a file is
+// open, and the Volume's destructor drops its work folder -- the open file then vanished and every write failed with ENOENT.
+std::shared_ptr<Service> make_file(std::shared_ptr<fs::VFile> f, const std::string& path, std::shared_ptr<fs::Volume> keep = nullptr) {
     auto open = std::make_shared<OpenCount>(g_open_files);
-    return make_iface("nn::fssrv::sf::IFile", [f, path, open](Service& s) {
+    return make_iface("nn::fssrv::sf::IFile", [f, path, open, keep](Service& s) {
         s.add_cmd(0, "Read", [f, open](Request& req, Response& rsp) -> uint32_t {
             const int64_t off = req.arg<int64_t>(8);
             const uint64_t size = req.arg<uint64_t>(16);
@@ -346,7 +355,7 @@ std::shared_ptr<Service> make_filesystem(std::shared_ptr<Volume> v, std::string 
                 NXLOG_D("fs", "OpenFile %s%s (mode %u) -> 0x%x", label.c_str(), p.c_str(), req.arg<uint32_t>(0), r);
                 return r;
             }
-            rsp.push_object(make_file(f, p));
+            rsp.push_object(make_file(f, p, v));
             return 0;
         });
         s.add_cmd(9, "OpenDirectory", [v, label](Request& req, Response& rsp) -> uint32_t {
@@ -362,7 +371,12 @@ std::shared_ptr<Service> make_filesystem(std::shared_ptr<Volume> v, std::string 
             rsp.push_object(make_dir(std::move(keep)));
             return 0;
         });
-        s.add_cmd(10, "Commit", [v](Request&, Response&) -> uint32_t { return v->commit(); });
+        s.add_cmd(10, "Commit", [v](Request&, Response&) -> uint32_t {
+            const uint32_t r = v->commit();
+            if (r == 0 && v->journalled())   // save data (the RomFS volume is direct): tell the listener the save is on disk
+                if (void (*fn)() = st().commit_listener.load(std::memory_order_acquire)) fn();
+            return r;
+        });
         s.add_cmd(11, "GetFreeSpaceSize", [v](Request& req, Response& rsp) -> uint32_t {
             PATH_OR_FAIL(p, 0);
             const uint64_t cap = v->capacity();
@@ -424,6 +438,9 @@ std::shared_ptr<Service> make_storage_rom(std::shared_ptr<fs::RomfsImage> img) {
     });
 }
 
+// The RomFS image the game reads: [fs] romfs over [fs] romfs_base, under [fs] romfs_mod and then the mod loaders' folders
+// (fsapi::set_romfs_overlays). When the mod loaders' folders cannot be layered (a mod has a file where the game has a folder), they are
+// left out with an error rather than stopping the game.
 std::shared_ptr<fs::RomfsImage> rom_image() {
     std::lock_guard<std::mutex> lk(st().mu);
     if (st().rom) return st().rom;
@@ -433,7 +450,17 @@ std::shared_ptr<fs::RomfsImage> rom_image() {
     const std::string dir = romfs_dir();
     const std::string base = romfs_base_dir();
     const std::string mod = romfs_mod_dir();
-    if (!img->build(dir, &err, base, mod)) {
+    std::vector<std::string> layers;
+    if (!mod.empty()) layers.push_back(mod);
+    const size_t first_overlay = layers.size();
+    layers.insert(layers.end(), st().overlays.begin(), st().overlays.end());
+    bool built = img->build(dir, &err, base, layers);
+    if (!built && layers.size() > first_overlay) {
+        NXLOG_E("fs", "RomFS: the mods' folders cannot be layered over the game's files (%s): the game starts without the mods' data", err.c_str());
+        layers.resize(first_overlay);
+        built = img->build(dir, &err, base, layers);
+    }
+    if (!built) {
         NXLOG_E("fs", "RomFS folder '%s'%s%s%s%s cannot be served: %s (set [fs] romfs)", dir.c_str(), base.empty() ? "" : " over ", base.c_str(),
                 mod.empty() ? "" : " with mod ", mod.c_str(), err.c_str());
         st().rom_failed = true;
@@ -446,14 +473,33 @@ std::shared_ptr<fs::RomfsImage> rom_image() {
     if (!base.empty())
         NXLOG_I("fs", "RomFS: %u of the %u files come from the base game's RomFS %s ([fs] romfs_base)", s.base_files, s.files, base.c_str());
     if (!mod.empty()) {
-        NXLOG_I("fs", "RomFS: %u of the %u files come from the mod folder %s ([fs] romfs_mod), %u of them replace a game file", s.mod_files, s.files,
-                mod.c_str(), s.mod_replaced);
-        if (s.mod_files > 0 && s.mod_replaced == 0)
+        const fs::RomfsImage::ModStats& m = s.mods[0];
+        NXLOG_I("fs", "RomFS: %u of the %u files come from the mod folder %s ([fs] romfs_mod), %u of them replace a game file", m.files, s.files,
+                mod.c_str(), m.replaced);
+        if (m.files > 0 && m.replaced == 0)
             NXLOG_W("fs", "none of the %u files in the mod folder replaces a game file. The mod folder must hold the same files and folders as the game's "
                           "RomFS (for example LD_C0_R.BIN at its top level), not the folder around it. Check the folder level in Settings > Game > Mods.",
-                    s.mod_files);
+                    m.files);
     }
+    for (size_t i = first_overlay; i < layers.size(); ++i)
+        NXLOG_I("fs", "RomFS: %u of the %u files come from the mods' folder %s, %u of them replace a game file", s.mods[i].files, s.files,
+                layers[i].c_str(), s.mods[i].replaced);
     st().rom = img;
+    return img;
+}
+
+// The game's own RomFS files, no mod folder (fsapi::romfs_game_*), built on first use. Null when the folder cannot be served.
+std::shared_ptr<fs::RomfsImage> game_rom_image() {
+    std::lock_guard<std::mutex> lk(st().mu);
+    if (st().game_rom || st().game_rom_failed) return st().game_rom;
+    auto img = std::make_shared<fs::RomfsImage>();
+    std::string err;
+    if (!img->build(romfs_dir(), &err, romfs_base_dir())) {
+        NXLOG_E("fs", "RomFS: the game's own files cannot be read for the mods: %s", err.c_str());
+        st().game_rom_failed = true;
+        return nullptr;
+    }
+    st().game_rom = img;
     return img;
 }
 
@@ -619,6 +665,11 @@ std::shared_ptr<Service> make_fsp() {
     s->add_cmd(1, "SetCurrentProcess", [](Request&, Response&) -> uint32_t { return 0; });
     s->add_cmd(2, "OpenDataFileSystemByCurrentProcess", [](Request&, Response& rsp) -> uint32_t {
         // a .nup, and a RomFS layered with the base game or a mod, are served as the RomFS image (OpenDataStorage) only
+        {
+            std::lock_guard<std::mutex> lk(st().mu);
+            if (!st().overlays.empty()) return fs::rc::kTargetNotFound;
+            st().rom_served = true;
+        }
         if (nup::is_nup(romfs_dir()) || !romfs_base_dir().empty() || !romfs_mod_dir().empty()) return fs::rc::kTargetNotFound;
         auto v = std::make_shared<Volume>(romfs_dir(), false, true, 0);
         if (!v->ok()) return fs::rc::kTargetNotFound;
@@ -744,6 +795,10 @@ std::shared_ptr<Service> make_fsp() {
     s->add_cmd(100, "OpenImageDirectoryFileSystem", [](Request&, Response&) -> uint32_t { return fs::rc::kTargetNotFound; });
     s->add_cmd(110, "OpenContentStorageFileSystem", [](Request&, Response&) -> uint32_t { return fs::rc::kTargetNotFound; });
     auto rom_storage = [](Request&, Response& rsp) -> uint32_t {
+        {
+            std::lock_guard<std::mutex> lk(st().mu);
+            st().rom_served = true;
+        }
         auto img = rom_image();
         if (!img) return fs::rc::kTargetNotFound;
         rsp.push_object(make_storage_rom(img));
@@ -833,6 +888,10 @@ void fs_reset() {
     st().rom.reset();
     st().rom_failed = false;
     st().rom_error.clear();
+    st().rom_served = false;
+    st().overlays.clear();
+    st().game_rom.reset();
+    st().game_rom_failed = false;
     st().saves.clear();
     st().ids.clear();
 }
@@ -855,6 +914,43 @@ RomfsSummary romfs_summary() {
 }
 
 namespace fsapi {
+
+bool set_romfs_overlays(const std::vector<std::string>& roots) {
+    std::lock_guard<std::mutex> lk(st().mu);
+    if (roots == st().overlays) return true;
+    if (st().rom_served) {
+        NXLOG_W("fs", "RomFS: the mods' folders changed after the game opened its RomFS: they apply at the next start");
+        return false;
+    }
+    st().overlays = roots;
+    st().rom.reset();   // built before the game asked for it (the start-up check): built again with the new layers on first use
+    st().rom_failed = false;
+    st().rom_error.clear();
+    return true;
+}
+
+int64_t romfs_game_file_size(const std::string& path) {
+    const std::shared_ptr<fs::RomfsImage> img = game_rom_image();
+    uint64_t size = 0;
+    if (!img || !img->file_extent("/" + path, nullptr, &size)) return -1;
+    return static_cast<int64_t>(size);
+}
+
+int64_t romfs_game_read(const std::string& path, uint64_t offset, void* buf, uint64_t n) {
+    const std::shared_ptr<fs::RomfsImage> img = game_rom_image();
+    uint64_t at = 0, size = 0;
+    if (!img || !img->file_extent("/" + path, &at, &size)) return -1;
+    if (offset >= size) return 0;
+    n = std::min(n, size - offset);
+    return img->read(at + offset, buf, n) ? static_cast<int64_t>(n) : -1;
+}
+
+void romfs_game_release() {
+    std::lock_guard<std::mutex> lk(st().mu);
+    st().game_rom.reset();
+}
+
+void set_save_commit_listener(void (*fn)()) { st().commit_listener.store(fn, std::memory_order_release); }
 
 uint32_t ensure_account_save(uint64_t uid_hi, uint64_t uid_lo, bool* created) {
     if (created) *created = false;

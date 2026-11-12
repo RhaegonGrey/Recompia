@@ -3,6 +3,8 @@
 // data, no runtime, so the factory settings can be read without linking the rest.
 #include "core/pkp_game.h"
 
+#include <iterator>
+
 #include "core/pkp_settings.h"
 #include "play_types.h"
 
@@ -114,6 +116,22 @@ const game::Info& data_info() {
         g.romfs_min_bytes = 7246052773ull;
         g.play_defaults = &game_defaults();
         g.settings_doc = &settings::doc_rows;
+        // Modtopia mods (nxrt/mods.h): the default folders of game::ModHost (the launcher and Set up use the same ones), shown to mods as
+        // "Recompia <version>".
+        // The shader files: the linked-data archive (GLSLC outputs stored as is) and the RDB data files with G2S containers or system
+        // resources holding GLSLC outputs (tools/shaders/docs/AMPERE.md section 1), checked against 2.0.1a's RomFS. Based on pokopia-native's
+        // list (MIT, host/mods.c), plus 0x38f972af.fdata (most of the game's G2S containers) and without the archive's index LI_C0_R.IDX (no
+        // shaders in it).
+        static constexpr const char* kShaderFiles[] = {
+            "LD_C0_R.BIN",
+            "motor_asset_re/KIDS_PLATFORM_OUNCE/0x05d525ae.fdata",
+            "motor_asset_re/KIDS_PLATFORM_OUNCE/0x2943e4da.fdata",
+            "motor_asset_re/KIDS_PLATFORM_OUNCE/0x38f972af.fdata",
+            "motor_asset_re/KIDS_PLATFORM_OUNCE/0x52482d03.fdata",
+        };
+        static const game::ModHost kModHost{.host = "Recompia", .shader_files = kShaderFiles,
+                                            .shader_file_count = static_cast<uint32_t>(std::size(kShaderFiles))};
+        g.mods = &kModHost;
         return g;
     }();
     return info;

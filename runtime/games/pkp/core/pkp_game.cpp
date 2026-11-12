@@ -4,6 +4,7 @@
 #include "input/pkp_aim.h"
 #include "input/pkp_aim_debug.h"
 #include "ui/pkp_craft.h"
+#include "ui/pkp_item_edit.h"
 #include "core/pkp_feature.h"
 #include "input/pkp_jump.h"
 #include "input/pkp_kbm.h"
@@ -11,6 +12,7 @@
 #include "core/pkp_layout.h"
 #include "core/pkp_linkplay.h"
 #include "core/pkp_mods_notice.h"
+#include "core/pkp_mods.h"
 #include "ui/pkp_menu.h"
 #include "render/pkp_ui_backdrop.h"
 #if NXRT_TESTTOOLS
@@ -22,7 +24,6 @@
 #include "render/pkp_quality.h"
 #include "core/pkp_pokemon_cap.h"
 #include "core/pkp_save_uuid.h"
-#include "core/pkp_pokemon_cap.h"
 #include "render/pkp_shoulder_camera.h"
 #include "ui/pkp_sort.h"
 #include "render/pkp_taa.h"
@@ -52,6 +53,8 @@ constexpr uint64_t kFrameUpdate = 0x1fdcde4;
 // frame-rate hook at that site, as they did when that hook called them. Where the order matters:
 //   save_uuid           first: its install repairs the save before the game is loaded (pkp_save_uuid.h)
 //   linkplay            before play: its frame callback (the one-time check of main) runs first in play mode's frame
+//   mods                the Modtopia mods' frame tick (pkp_mods.h): first of the game-frame callbacks, so mods see each frame before our
+//                       features change anything in it
 //   play, kbm           play's status fields come first in the status line, kbm's right after them
 //   kbm, movie_test     game-frame callbacks, kbm's first (movie_test and taa_probe are test tools: in the table only with NXRT_TESTTOOLS, which
 //                       a release package builds without; the registry has no stub for them)
@@ -63,6 +66,7 @@ constexpr uint64_t kFrameUpdate = 0x1fdcde4;
 //   options             after title: title's frame callback runs first
 //   ui_backdrop         after menu: it registers a client of the menu's pane draw hooks (pkp_menu.h) and holds no hook of its own
 //   mods_notice         any position: it only logs which gameplay mods are on, at install
+//   item_edit           no hooks and no callbacks: the Options screen's Items tab calls it when it opens and commits (pkp_item_edit.h)
 // No other two features hook the same address.
 //
 // Each row says what the feature is to the player. mod(): a gameplay mod, named with its switches (the gameplay() rows of the [pkp]
@@ -78,7 +82,7 @@ constexpr Entry port(const Feature* f) { return {f, {settings::Key::Count, setti
 
 using enum settings::Key;
 constexpr Entry kEntries[] = {
-    port(&kSaveUuidFeature), port(&kLinkplayFeature), port(&kPlayFeature), port(&kKbmFeature), port(&kModsNoticeFeature),
+    port(&kSaveUuidFeature), port(&kLinkplayFeature), port(&kModsFeature), port(&kPlayFeature), port(&kKbmFeature), port(&kModsNoticeFeature),
 #if NXRT_TESTTOOLS
     port(&kMovieTestFeature),
 #endif
@@ -89,7 +93,8 @@ constexpr Entry kEntries[] = {
 #endif
     port(&kShoulderCameraFeature),
     mod(&kJumpFeature, JumpMomentum), mod(&kAimFeature, CameraAim), port(&kAimDebugFeature), mod(&kTitleFeature, TitleQuit), mod(&kSortFeature, InventorySort),
-    mod(&kCraftFeature, CraftSearch), mod(&kPokemonCapFeature, PokemonCap), port(&key_guide::kKeyGuideFeature),
+    mod(&kCraftFeature, CraftSearch), mod(&kItemEditFeature, ItemEditor), mod(&kPokemonCapFeature, PokemonCap),
+    port(&key_guide::kKeyGuideFeature),
     port(&kOptionsFeature),
 };
 constexpr size_t kFeatureCount = std::size(kEntries);

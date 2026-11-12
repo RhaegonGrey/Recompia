@@ -1,0 +1,26 @@
+# Pokopia mappings for game version 1.0.5 (main build 816c5358...). Format: docs/mappings.md; evidence: mappings/NOTES.md.
+game = "1.0.5"
+build_id = "816c5358e8178d802fcec4a7ce5a741a"
+
+[core]
+area = { global = "GameMgr", field = "GameMgr.stage", ready = "GameMgr.permissions" }
+
+[functions]
+"Camera::BuildProjection" = { at = "main+0x1e225d4", word = 0xd503237f }
+"Ui::WorldToScreen" = { at = "main+0x100c60c", word = 0x93401c48 }
+"Camera::LookAt" = { at = "main+0x1e22828", word = 0xd503237f }
+"Clock::SetNow" = { at = "main+0x1039844", word = 0xd503237f }
+
+[globals]
+GameMgr = "main+0x3451198"
+
+[fields]
+"GameMgr.stage" = { offset = 0x18, size = 1 }
+"GameMgr.permissions" = { offset = 0x8c, size = 4 }
+"Camera.near" = { offset = 0x140, size = 4 }
+"Camera.far" = { offset = 0x144, size = 4 }
+"Camera.fov" = { offset = 0x148, size = 4 }
+"Camera.aspect" = { offset = 0x14c, size = 4 }
+
+[areas]
+"12" = "Palette Town"

@@ -315,7 +315,9 @@ struct Volume::Impl {
 
     // A host failure while changing a journalled volume taints its transaction (see Taint). Returns the guest result.
     uint32_t host_fail(DWORD e) {
-        if (journal) taint->set(e);
+        if (journal) {
+            taint->set(e);
+        }
         return host_rc(e);
     }
     uint32_t host_fail(const std::error_code& ec) { return host_fail(ec.value() ? static_cast<DWORD>(ec.value()) : ERROR_GEN_FAILURE); }
@@ -461,9 +463,13 @@ Volume::Volume(const std::string& root, bool journal, bool read_only, uint64_t c
         stdfs::create_directories(s.root, ec);
         recover(root);
         s.marker = stdfs::path(s.root.string() + ".commit");
-        s.work = stdfs::path(s.root.string() + ".work." + std::to_string(GetCurrentProcessId()));
-        s.journal_file = stdfs::path(s.root.string() + ".journal." + std::to_string(GetCurrentProcessId()));
-        stdfs::remove_all(s.work, ec);   // a second open in this process starts from the committed state
+        // Per instance, not per process: a second Volume over the same save (a read-only open is not cached) used to wipe the
+        // first one's work folder while its files were open, and every later write failed with ENOENT (2026-11-10).
+        static std::atomic<uint32_t> seq{1};
+        const std::string inst = std::to_string(GetCurrentProcessId()) + "." + std::to_string(seq.fetch_add(1, std::memory_order_relaxed));
+        s.work = stdfs::path(s.root.string() + ".work." + inst);
+        s.journal_file = stdfs::path(s.root.string() + ".journal." + inst);
+        stdfs::remove_all(s.work, ec);   // a fresh open starts from the committed state
         stdfs::create_directories(s.work, ec);
         s.ok = stdfs::is_directory(s.root, ec) && stdfs::is_directory(s.work, ec);
     } else {
@@ -527,7 +533,11 @@ uint32_t Volume::create_file(const std::string& path, int64_t size) {
     if (p_->lookup(path).exists) return rc::kPathAlreadyExists;
     if (const uint32_t r = p_->ensure_parents(path)) return r;
     HANDLE h = open_host(p_->wpath(path), true, CREATE_NEW);
-    if (h == INVALID_HANDLE_VALUE) return p_->host_fail(GetLastError());
+    if (h == INVALID_HANDLE_VALUE) {
+        NXLOG_E("fs", "create_file %s -> %s failed (win32 %lu)", path.c_str(), to_u8(p_->wpath(path)).c_str(),
+                static_cast<unsigned long>(GetLastError()));
+        return p_->host_fail(GetLastError());
+    }
     uint32_t r = 0;
     if (size) {
         LARGE_INTEGER li;

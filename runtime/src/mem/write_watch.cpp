@@ -96,6 +96,38 @@ bool os_write_overlaps(uint64_t lo, uint64_t hi) {
 
 uint64_t bit(uint64_t page) { return uint64_t{1} << (page & 63); }
 
+// A host page (4 KiB on Windows, 16 KiB on Apple silicon) is the smallest range the OS can protect, and the POSIX shim applies a
+// host page the union of its guest pages' protections (os_posix_mem.cpp, host_page_protect): arming one 4 KiB guest page of a
+// 16 KiB host page would leave the page writable, so the fault this tracker lives on would never come and the owner's copy would
+// go stale. Every range arm(), guard() and release_page() touch is rounded out to the host page and the bits go with it, so the
+// bitmap and the protection always agree. On a 4 KiB host page these helpers change nothing.
+uint64_t host_pages() {
+    static const uint64_t n = [] {
+        SYSTEM_INFO si{};
+        GetSystemInfo(&si);
+        return std::max<uint64_t>(1, static_cast<uint64_t>(si.dwPageSize) / kPage);
+    }();
+    return n;
+}
+
+// The guest pages of the host page `page` shares, clamped to the region.
+void host_group(const Region* r, uint64_t page, uint64_t& first, uint64_t& count) {
+    const uint64_t n = host_pages();
+    first = page & ~(n - 1);
+    count = std::min(n, r->npages - first);
+}
+
+// [first, first + count) rounded out to whole host pages (clamped to the region): first and count in, first and count out.
+void to_host_pages(const Region* r, uint64_t& first, uint64_t& count) {
+    if (host_pages() == 1 || !count) return;
+    const uint64_t last = std::min<uint64_t>(first + count, r->npages);
+    uint64_t f0 = 0, c0 = 0, f1 = 0, c1 = 0;
+    host_group(r, first, f0, c0);
+    host_group(r, last - 1, f1, c1);
+    first = f0;
+    count = f1 + c1 - f0;
+}
+
 std::atomic<bool> g_sum_scan{true};                    // take_written reads wsum (set_summary_scan); off: every word, as before
 std::atomic<uint64_t> g_st_takes{0}, g_st_takes_empty{0}, g_st_take_pages{0}, g_st_take_words{0};
 
@@ -167,26 +199,32 @@ DWORD page_protect(uint64_t addr) {
 // One page of a region becomes writable and counts as written. True when the page is ours to handle (the faulting write may retry).
 // The caller holds the region's lock shared.
 bool release_page(Region* r, uint64_t page) {
-    const uint64_t b = bit(page);
-    const uint64_t w = page >> 6;
+    // The whole host page becomes writable, so every guest page on it is released (and counts as written) together: their bits
+    // must not keep saying "armed" while the OS lets writes through.
+    uint64_t g0 = 0, gn = 0;
+    host_group(r, page, g0, gn);
+    const uint64_t b = bit(g0);
+    const uint64_t w = g0 >> 6;
     // Announce the release before the bit goes: whoever finds the bit already clear can then tell "somebody is making this page writable"
     // (the count is up from before the bit went until after the VirtualProtect) from "nobody is": a foreign read-only page.
-    std::atomic<uint16_t>& rel = r->releasing[page];
+    std::atomic<uint16_t>& rel = r->releasing[g0];
     const bool armed = (r->prot[w].load(std::memory_order_acquire) & b) != 0;
     if (armed) rel.fetch_add(1, std::memory_order_seq_cst);
     const uint64_t old = r->prot[w].fetch_and(~b, std::memory_order_acq_rel);
-    r->valid[w].fetch_and(~b, std::memory_order_acq_rel);
-    r->written[w].fetch_or(b, std::memory_order_acq_rel);
-    r->wsum[w >> 6].fetch_or(uint64_t{1} << (w & 63), std::memory_order_acq_rel);
-    const uint64_t addr = r->base + page * kPage;
+    set_bits(r->prot.get(), g0, gn, false);
+    set_bits(r->valid.get(), g0, gn, false);
+    set_bits(r->written.get(), g0, gn, true);
+    sum_mark(r, g0, gn);
+    const uint64_t addr = r->base + g0 * kPage;
+    const SIZE_T len = static_cast<SIZE_T>(gn * kPage);
     if (old & b) {
         bool ok = true;
         DWORD was = 0;
-        if (!VirtualProtect(reinterpret_cast<void*>(addr), kPage, PAGE_READWRITE, &was)) {
+        if (!VirtualProtect(reinterpret_cast<void*>(addr), len, PAGE_READWRITE, &was)) {
             ok = false;
         } else if ((was & 0xff) != PAGE_READONLY) {    // somebody else set this protection: give it back and let the fault through
             DWORD tmp = 0;
-            VirtualProtect(reinterpret_cast<void*>(addr), kPage, was, &tmp);
+            VirtualProtect(reinterpret_cast<void*>(addr), len, was, &tmp);
             ok = false;
         }
         rel.fetch_sub(1, std::memory_order_seq_cst);
@@ -269,7 +307,10 @@ void drop_guard(uint64_t addr, uint64_t size);   // below
 LONG CALLBACK on_fault(EXCEPTION_POINTERS* ep) {
     if (!ep || !ep->ExceptionRecord) return EXCEPTION_CONTINUE_SEARCH;
     const EXCEPTION_RECORD* rec = ep->ExceptionRecord;
-    if (rec->ExceptionCode != EXCEPTION_ACCESS_VIOLATION || rec->NumberParameters < 2) return EXCEPTION_CONTINUE_SEARCH;
+    // macOS reports a write to a page this process made read-only as SIGBUS (EXCEPTION_IN_PAGE_ERROR), not as an access
+    // violation; both reach here with the write/address parameters the shim fills.
+    if ((rec->ExceptionCode != EXCEPTION_ACCESS_VIOLATION && rec->ExceptionCode != EXCEPTION_IN_PAGE_ERROR) || rec->NumberParameters < 2)
+        return EXCEPTION_CONTINUE_SEARCH;
     const ULONG_PTR kind = rec->ExceptionInformation[0];     // 0 read, 1 write, 8 execute
     if (kind != 0 && kind != 1) return EXCEPTION_CONTINUE_SEARCH;
     if (g_live.load(std::memory_order_acquire) == 0) return EXCEPTION_CONTINUE_SEARCH;
@@ -342,9 +383,11 @@ void drop_guard(uint64_t addr, uint64_t size) {
         const uint64_t lo = std::max(addr, r->base), end = std::min(addr + size, r->base + r->npages * kPage);
         if (lo >= end) continue;
         const uint64_t first = (lo - r->base) / kPage, last = (end - 1 - r->base) / kPage;
-        if (!any_set(r->guard.get(), first, last - first + 1)) continue;
+        uint64_t f = first, c = last - first + 1;
+        to_host_pages(r, f, c);
+        if (!any_set(r->guard.get(), f, c)) continue;
         ExclusiveLock lk(r);
-        unguard_locked(r, first, last - first + 1);
+        unguard_locked(r, f, c);
     }
     g_busy.fetch_sub(1, std::memory_order_seq_cst);
 }
@@ -440,6 +483,7 @@ bool arm(Region* r, uint64_t first, uint64_t count) {
     if (!r || !count || first >= r->npages || count > r->npages - first) return false;
     nxrt::HitchTimer ht(nxrt::kHpWwArm);
     ExclusiveLock lk(r);
+    to_host_pages(r, first, count);
     if (any_set(r->ban.get(), first, count)) return false;
     const uint64_t a = r->base + first * kPage, n = count * kPage;
     // A file read (or a mapping change in memory.cpp) into these pages is in progress: leave them alone. Its scope is published before it
@@ -511,6 +555,7 @@ void set_guard_handler(GuardHandler fn) { g_guard_fn.store(fn, std::memory_order
 bool guard(Region* r, uint64_t first, uint64_t count) {
     if (!r || !count || first >= r->npages || count > r->npages - first) return false;
     ExclusiveLock lk(r);
+    to_host_pages(r, first, count);
     if (!all_set(r->prot.get(), first, count) || any_set(r->ban.get(), first, count)) return false;
     const uint64_t a = r->base + first * kPage, n = count * kPage;
     if (os_write_overlaps(a, a + n)) return false;
@@ -527,7 +572,9 @@ bool guard(Region* r, uint64_t first, uint64_t count) {
 void unguard(Region* r, uint64_t first, uint64_t count) {
     if (!r || first >= r->npages) return;
     count = std::min(count, r->npages - first);
-    if (!count || !any_set(r->guard.get(), first, count)) return;
+    if (!count) return;
+    to_host_pages(r, first, count);
+    if (!any_set(r->guard.get(), first, count)) return;
     ExclusiveLock lk(r);
     unguard_locked(r, first, count);
 }

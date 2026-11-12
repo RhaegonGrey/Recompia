@@ -37,6 +37,8 @@
 #include <unordered_map>
 #include <vector>
 
+#include "nvn_thread.h"
+
 #if defined(_WIN32)
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -98,7 +100,7 @@ std::deque<Job> g_hot_q, g_cold_q;    // hot: programs a command buffer was reco
 std::vector<RasterKey> g_rasters;
 std::deque<std::array<const ShaderInfo*, 3>> g_programs;   // the most recent programs, for the raster flags that show up later
 std::set<std::array<const ShaderInfo*, 3>> g_seen, g_hot, g_covered;
-std::vector<std::thread> g_workers;
+std::vector<BigThread> g_workers;
 // Optimised replacements for linked pipelines (gpl_upgrade): the draw links first, a background thread then makes the whole pipeline (or links the
 // same parts with link-time optimisation) and the pipeline lookup swaps it in.
 enum class UpMode { Off, Whole, Lto };
@@ -112,7 +114,7 @@ UpMode g_up_mode = UpMode::Off;
 bool g_retain = false;                     // parts keep what a link-time optimised link needs
 std::deque<UpJob> g_up_q;
 std::condition_variable g_up_cv;
-std::vector<std::thread> g_up_workers;
+std::vector<BigThread> g_up_workers;
 int g_up_running = 0;
 GplStats g_stats;
 uint64_t g_logged_sig = 0;
@@ -597,8 +599,8 @@ void init_once() {
     {
         std::string m = config_get_str("nvn", "gpl_upgrade", "auto");
         const bool is_auto = m != "off" && m != "false" && m != "0" && m != "lto" && m != "whole";
-        if (is_auto) m = host_is_wine() ? "off" : "whole";
-        NXLOG_I(kTag, "gpl_upgrade %s (%s)", m.c_str(), is_auto ? (host_is_wine() ? "auto, Wine" : "auto, not Wine") : "set");
+        if (is_auto) m = host_is_linux() ? "off" : "whole";
+        NXLOG_I(kTag, "gpl_upgrade %s (%s)", m.c_str(), is_auto ? (host_is_linux() ? "auto, Linux" : "auto, not Linux") : "set");
         g_up_mode = (m == "off" || m == "false" || m == "0") ? UpMode::Off : (m == "lto") ? UpMode::Lto : UpMode::Whole;
         g_retain = g_lto || g_up_mode == UpMode::Lto;
     }
@@ -610,10 +612,16 @@ void init_once() {
     g_rasters.assign(1, RasterKey{});
     const unsigned hw = std::max(1u, std::thread::hardware_concurrency());
     const int64_t want = config_get_int("nvn", "gpl_threads", std::clamp<int64_t>(hw / 6, 1, 4));
-    for (int64_t i = 0; i < want; ++i) g_workers.emplace_back(worker_main);
+    for (int64_t i = 0; i < want; ++i) {
+        g_workers.emplace_back();
+        g_workers.back().start("nvn-gpl", 16, worker_main);   // pipeline library linking runs the Metal shader compiler (deep)
+    }
     if (g_up_mode != UpMode::Off) {
         const int64_t nup = config_get_int("nvn", "gpl_upgrade_threads", 1);
-        for (int64_t i = 0; i < nup; ++i) g_up_workers.emplace_back(upgrade_main);
+        for (int64_t i = 0; i < nup; ++i) {
+            g_up_workers.emplace_back();
+            g_up_workers.back().start("nvn-gpl-upgrade", 16, upgrade_main);
+        }
     }
     NXLOG_I(kTag, "pipeline libraries on: %zu background threads%s; linked pipelines are replaced by %s", g_workers.size(), g_lto ? ", link-time optimisation requested" : "",
             g_up_mode == UpMode::Off ? "nothing (gpl_upgrade is off)" : g_up_mode == UpMode::Lto ? "link-time optimised links" : "whole pipelines");
@@ -1015,7 +1023,7 @@ GplStats gpl_stats() {
 }
 
 void gpl_stop() {
-    std::vector<std::thread> workers, ups;
+    std::vector<BigThread> workers, ups;
     {
         std::lock_guard<std::mutex> lk(g_mu);
         if (!g_inited) return;
@@ -1191,8 +1199,11 @@ bool gpl_prepare(const PrepareOptions& o, PrepareResult* res) {
             std::lock_guard<std::mutex> lk(used_mu);
             used.insert(used.end(), mine.begin(), mine.end());
         };
-        std::vector<std::thread> pool;
-        for (int t = 1; t < threads; ++t) pool.emplace_back(work);
+        std::vector<BigThread> pool;
+        for (int t = 1; t < threads; ++t) {
+            pool.emplace_back();
+            pool.back().start("nvn-gpl-prepare", 16, work);
+        }
         work();
         for (auto& t : pool) t.join();
         // between batches nothing is creating pipelines: drop the batch's modules, parts and SPIR-V

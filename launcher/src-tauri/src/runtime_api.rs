@@ -41,10 +41,10 @@ pub fn agreement(exe: Option<u32>, dll: Option<u32>, sdk: Option<u32>) -> Agreem
 /// pkp.exe in the game folder, the pkp_rt.dll Play gives it (the launcher's copy, which host.rs sync_runtime_files puts next to
 /// the exe before the start; the game folder's own when the launcher has none) and the tools' header.
 pub fn check(game_dir: &Path, tools_dir: &Path) -> Agreement {
-    let launcher_dll = tools_dir.parent().unwrap_or(tools_dir).join("pkp_rt.dll");
-    let dll = if launcher_dll.is_file() { launcher_dll } else { game_dir.join("pkp_rt.dll") };
+    let launcher_dll = crate::host::runtime_lib(tools_dir.parent().unwrap_or(tools_dir));
+    let dll = if launcher_dll.is_file() { launcher_dll } else { crate::host::runtime_lib(game_dir) };
     let header = tools_dir.join("build").join("sdk").join("pkp_rt_api.h");
-    agreement(export_of(&game_dir.join("pkp.exe")), export_of(&dll), header_api(&header))
+    agreement(export_of(&crate::host::game_exe(game_dir)), export_of(&dll), header_api(&header))
 }
 
 /// The number in `#define PKP_RT_API 2u` of a copy of pkp_rt_api.h; None without the file or the line.
@@ -206,8 +206,9 @@ mod tests {
     #[test]
     fn the_exported_number_is_read_from_the_file() {
         let d = temp("export");
-        fs::write(d.join("pkp_rt.dll"), image(SYMBOL, 2)).unwrap();
-        assert_eq!(export_of(&d.join("pkp_rt.dll")), Some(2));
+        let lib = crate::host::runtime_lib(&d);
+        fs::write(&lib, image(SYMBOL, 2)).unwrap();
+        assert_eq!(export_of(&lib), Some(2));
         fs::write(d.join("old.dll"), image(b"other_data\0", 2)).unwrap();
         assert_eq!(export_of(&d.join("old.dll")), None, "another export is not ours");
         fs::write(d.join("text.dll"), b"MZ but not a PE file").unwrap();
@@ -245,15 +246,15 @@ mod tests {
         fs::create_dir_all(&game).unwrap();
         fs::create_dir_all(&sdk).unwrap();
         fs::write(sdk.join("pkp_rt_api.h"), "#define PKP_RT_API 2u\n").unwrap();
-        fs::write(root.join("pkp_rt.dll"), image(SYMBOL, 2)).unwrap();
-        fs::write(game.join("pkp.exe"), image(b"other_data\0", 0)).unwrap();
+        fs::write(crate::host::runtime_lib(&root), image(SYMBOL, 2)).unwrap();
+        fs::write(crate::host::game_exe(&game), image(b"other_data\0", 0)).unwrap();
         assert_eq!(check(&game, &tools), Agreement::ExeStale, "an exe from before the export");
-        fs::write(game.join("pkp.exe"), image(SYMBOL, 2)).unwrap();
+        fs::write(crate::host::game_exe(&game), image(SYMBOL, 2)).unwrap();
         assert_eq!(check(&game, &tools), Agreement::Agree);
         fs::write(sdk.join("pkp_rt_api.h"), "#define PKP_RT_API 3u\n").unwrap();
         assert_eq!(check(&game, &tools), Agreement::Mixed { dll: Some(2), sdk: Some(3) });
-        fs::remove_file(root.join("pkp_rt.dll")).unwrap();
-        fs::write(game.join("pkp_rt.dll"), image(SYMBOL, 3)).unwrap();
+        fs::remove_file(crate::host::runtime_lib(&root)).unwrap();
+        fs::write(crate::host::runtime_lib(&game), image(SYMBOL, 3)).unwrap();
         assert_eq!(check(&game, &tools), Agreement::ExeStale, "without a launcher copy the game folder's dll counts");
         fs::remove_dir_all(root).unwrap();
     }

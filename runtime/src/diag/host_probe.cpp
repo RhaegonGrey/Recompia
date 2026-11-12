@@ -21,10 +21,18 @@ namespace {
 constexpr const char* kTag = "host";
 
 void run_probe() {
-    std::ifstream sm("Z:\\proc\\self\\smaps");
+#if defined(_WIN32)
+    // Under Wine the kernel's files are on its Z: drive; the native Linux build reads them where they are.
+    const char* const smaps_path = "Z:\\proc\\self\\smaps";
+    const char* const thp_path = "Z:\\sys\\kernel\\mm\\transparent_hugepage\\enabled";
+#else
+    const char* const smaps_path = "/proc/self/smaps";
+    const char* const thp_path = "/sys/kernel/mm/transparent_hugepage/enabled";
+#endif
+    std::ifstream sm(smaps_path);
     std::string thp;
     {
-        std::ifstream f("Z:\\sys\\kernel\\mm\\transparent_hugepage\\enabled");
+        std::ifstream f(thp_path);
         if (f) std::getline(f, thp);
         while (!thp.empty() && (thp.back() == '\r' || thp.back() == '\n' || thp.back() == ' ')) thp.pop_back();
     }
@@ -72,7 +80,7 @@ void host_probe_tick(bool presented) {
     if (first == Clock::time_point{}) first = Clock::now();
     if (Clock::now() - first < std::chrono::seconds(60)) return;
     done = true;
-    if (!host_is_wine()) return;
+    if (!host_is_linux()) return;   // the probe reads the Linux kernel's files: /proc smaps and the THP mode
     run_probe();
 }
 

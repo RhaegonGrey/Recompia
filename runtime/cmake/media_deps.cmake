@@ -10,6 +10,10 @@ set(_nxrt_vpx_roots "${NXRT_LIBVPX_ROOT}" "C:/vcpkg/installed/x64-windows-static
 if(DEFINED ENV{VCPKG_ROOT})
     list(APPEND _nxrt_vpx_roots "$ENV{VCPKG_ROOT}/installed/x64-windows-static")
 endif()
+if(APPLE)
+    # Homebrew: brew install libvpx
+    list(APPEND _nxrt_vpx_roots "/opt/homebrew/opt/libvpx" "/usr/local/opt/libvpx")
+endif()
 list(TRANSFORM _nxrt_vpx_roots APPEND "/include" OUTPUT_VARIABLE _nxrt_vpx_inc)
 list(TRANSFORM _nxrt_vpx_roots APPEND "/lib" OUTPUT_VARIABLE _nxrt_vpx_lib)
 find_path(NXRT_LIBVPX_INCLUDE vpx/vpx_decoder.h PATHS ${_nxrt_vpx_inc} NO_DEFAULT_PATH)

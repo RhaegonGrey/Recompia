@@ -48,6 +48,7 @@ export function env(st) {
     version: s.app?.version ?? '',
     gameBusy,
     canSetUp: !!s.app?.dump && !gameBusy && !s.task && !s.starting,
+    canPlay: s.app?.readiness?.kind === 'ready' && !gameBusy && !s.task && !s.starting,
     storage: s.storage,
     repack: s.repack,
     taskBusy: !!s.task || s.starting,

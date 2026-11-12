@@ -392,7 +392,7 @@ const VIEWS = {
   setup: (s) => {
     const kind = s.app.readiness?.kind;
     const finish = needsFinish(kind);
-    return `<h1>${esc(flow.again ? t('Set up again') : finish ? t('Finish the update') : kind === 'resume' ? t('Continue setup') : t('Set up the game'))}</h1>
+    return `<h1>${esc(flow.again || kind === 'mods' ? t('Set up again') : finish ? t('Finish the update') : kind === 'resume' ? t('Continue setup') : t('Set up the game'))}</h1>
       ${filesHtml(s)}
       ${finish || !['setup', 'resume', 'ready'].includes(kind) ? `<p class="setup-line">${esc(fromBackend(s.app.readiness.detail))}</p>` : ''}
       <div class="setup-options">${kind === 'setup' ? SMALL_ROW : ''}${GENTLE_ROW}</div>

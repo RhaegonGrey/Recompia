@@ -3,6 +3,7 @@
 // layouts and entry points.
 #pragma once
 #include <atomic>
+#include <cstring>
 #include <mutex>
 #include <optional>
 #include <thread>

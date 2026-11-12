@@ -6,6 +6,14 @@
 #include <atomic>
 #include <string>
 
+#if !defined(_WIN32) && defined(__linux__)
+#include <cerrno>
+#include <ctime>
+#include <linux/futex.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+#endif
+
 #include "early_wake_internal.h"
 #include "nxrt/config.h"
 #include "nxrt/early_wake.h"
@@ -17,6 +25,11 @@
 namespace nxrt::kernel {
 
 namespace {
+// The host's timed wait on a 4-byte word and its wake, as the three callers below need them: wait_word blocks until the word is no longer
+// `expected`, for ns at most (ns < 0: no timeout), and answers -ETIMEDOUT when the time ended it. Every word waited on is 4 bytes in
+// host memory (the wake generation here, a poll-wait slot, a guest thread's park word), never a guest shared mapping: the Linux form is
+// the private futex.
+#if defined(_WIN32)
 using RtlWaitOnAddressFn = LONG(WINAPI*)(const void*, const void*, SIZE_T, const LARGE_INTEGER*);
 using RtlWakeAddressAllFn = void(WINAPI*)(const void*);
 
@@ -36,6 +49,43 @@ const AddressWait& address_wait() {
     }();
     return a;
 }
+bool wait_available() { return address_wait().wait != nullptr; }
+int wait_word(const void* word, uint32_t expected, int64_t ns) {
+    LARGE_INTEGER span;
+    span.QuadPart = -((ns + 99) / 100);   // relative, in 100 ns units
+    const LONG r = address_wait().wait(word, &expected, sizeof expected, ns < 0 ? nullptr : &span);
+    return r == 0x102 ? -ETIMEDOUT : 0;   // STATUS_TIMEOUT
+}
+void wake_word(const void* word) { address_wait().wake_all(word); }
+#elif defined(__linux__)
+// The futex syscall: the same primitive RtlWaitOnAddress is under Wine, without the ntdll thunk. The kernel compares the word and
+// queues the waiter in one step, so a wake that races the wait is never lost.
+int wait_word(const void* word, uint32_t expected, int64_t ns) {
+    timespec ts;
+    timespec* timeout = nullptr;
+    if (ns >= 0) {
+        ts.tv_sec = static_cast<time_t>(ns / 1000000000);
+        ts.tv_nsec = static_cast<long>(ns % 1000000000);
+        timeout = &ts;
+    }
+    const long r = ::syscall(SYS_futex, const_cast<void*>(word), FUTEX_WAIT_PRIVATE, expected, timeout, nullptr, 0);
+    return r == -1 && errno == ETIMEDOUT ? -ETIMEDOUT : 0;
+}
+void wake_word(const void* word) { ::syscall(SYS_futex, const_cast<void*>(word), FUTEX_WAKE_PRIVATE, INT32_MAX, nullptr, nullptr, 0); }
+bool wait_available() {
+    static const bool ok = [] {
+        uint32_t word = 0;
+        return ::syscall(SYS_futex, &word, FUTEX_WAKE_PRIVATE, 0, nullptr, nullptr, 0) == 0;   // wakes nobody: is there a futex at all
+    }();
+    return ok;
+}
+#else
+// macOS has no futex, and libSystem's __ulock_wait is the primitive that would stand in for it (docs/macos-optimisations.md). Short
+// sleeps keep yielding through there.
+int wait_word(const void*, uint32_t, int64_t) { return -ETIMEDOUT; }
+void wake_word(const void*) {}
+bool wait_available() { return false; }
+#endif
 
 std::atomic<uint32_t> g_gen{0};       // the wake generation: the word armed sleeps wait on
 std::atomic<int32_t> g_sleepers{0};   // threads inside address_wait_ns on g_gen
@@ -53,40 +103,39 @@ GaugeHook gauge_armed("kernel.early_wake.sleeps", [] { return static_cast<int64_
 GaugeHook gauge_early("kernel.early_wake.ended_early", [] { return static_cast<int64_t>(g_ended_early.load(std::memory_order_relaxed)); });
 }  // namespace
 
-bool detail::address_wait_available() { return address_wait().wait != nullptr; }
+bool detail::address_wait_available() { return wait_available(); }
 
 bool detail::address_wait_ns(const uint32_t* token, int64_t ns) {
-    LARGE_INTEGER span;
-    span.QuadPart = -((ns + 99) / 100);   // relative, in 100 ns units
     if (!token) {
         static thread_local uint32_t quiet = 0;   // nobody wakes it: the wait ends on its timeout
-        const uint32_t same = 0;
-        address_wait().wait(&quiet, &same, sizeof quiet, &span);
+        wait_word(&quiet, quiet, ns);
         return false;
     }
+    if (g_gen.load(std::memory_order_relaxed) != *token) return true;   // a fire came since the token was read: nothing to wait for
     // Counted before the wait compares the word: a fire either sees the sleeper and wakes it, or changed the word before the compare.
     g_sleepers.fetch_add(1);
-    address_wait().wait(&g_gen, token, sizeof *token, &span);
+    wait_word(&g_gen, *token, ns);
     g_sleepers.fetch_sub(1);
-    return g_gen.load() != *token;
+    return g_gen.load(std::memory_order_relaxed) != *token;
 }
 
 bool detail::address_wait_word(const std::atomic<uint32_t>* word, uint32_t seen, int64_t ns) {
-    LARGE_INTEGER span;
-    span.QuadPart = -((ns + 99) / 100);   // relative, in 100 ns units
-    return address_wait().wait(word, &seen, sizeof seen, ns < 0 ? nullptr : &span) != 0x102;   // STATUS_TIMEOUT
+    if (word->load(std::memory_order_relaxed) != seen) return true;
+    wait_word(word, seen, ns);
+    // Only a changed word is a wake: RtlWaitOnAddress may return spuriously and a futex wait returns EINTR when a signal arrives,
+    // and a caller that treats either as "woken" ends a guest's timed sleep early (wait_sleep, time.cpp).
+    return word->load(std::memory_order_relaxed) != seen;
 }
 
-void detail::address_wake_word(const std::atomic<uint32_t>* word) { address_wait().wake_all(word); }
+void detail::address_wake_word(const std::atomic<uint32_t>* word) { wake_word(word); }
 
 bool detail::address_wait_word_ns(const std::atomic<uint32_t>& word, uint32_t seen, int64_t ns) {
-    LARGE_INTEGER span;
-    span.QuadPart = -((ns + 99) / 100);   // relative, in 100 ns units
-    address_wait().wait(&word, &seen, sizeof seen, &span);
-    return word.load() != seen;
+    if (word.load(std::memory_order_relaxed) != seen) return true;
+    wait_word(&word, seen, ns);
+    return word.load(std::memory_order_relaxed) != seen;   // as above: a spurious return is not a wake
 }
 
-void detail::address_wake_all(const std::atomic<uint32_t>& word) { address_wait().wake_all(&word); }
+void detail::address_wake_all(const std::atomic<uint32_t>& word) { wake_word(&word); }
 
 bool early_wake_enabled() {
     static const bool on = [] {
@@ -117,7 +166,7 @@ void early_wake_arm(uint32_t token) {
 
 void early_wake_fire() {
     g_gen.fetch_add(1);
-    if (g_sleepers.load() > 0) address_wait().wake_all(&g_gen);   // sleepers exist only with the address wait resolved
+    if (g_sleepers.load() > 0) wake_word(&g_gen);   // sleepers exist only with the address wait resolved
 }
 
 bool detail::early_wake_take(uint32_t* token) {

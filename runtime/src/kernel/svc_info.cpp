@@ -41,8 +41,6 @@ constexpr uint32_t kInvalidCombination = 0xE801;   // kernel result 116 (Invalid
 constexpr uint64_t kCoreMaskAppSwitch2 = 0x3f;                  // Switch 2: cores 0..5 (Pokopia NPDM ThreadInfo cores 0-5)
 constexpr uint64_t kCoreMaskApp = 0x7;                          // nxrt: cores 0..2, the three application cores
 constexpr uint64_t kPriorityMaskApp = 0x0FFFFFFFF0000000ull;    // nxrt: bits 28..59 = HOS priorities 0x1C..0x3B (kernel.h: applications 28..59)
-constexpr uint64_t kAslrRegionAddress = 0x0008000000ull;       // chosen value (Switchbrew: no value given)
-constexpr uint64_t kAslrRegionSize = 0x7FF8000000ull;           // chosen value (Switchbrew: no value given)
 constexpr uint64_t kTotalMemorySwitch2 = 0x2A0000000ull;        // Switch 2 application: 10.5 GiB (nxrt choice; Pokopia alone pools ~8 GiB)
 constexpr uint64_t kTotalMemoryAvailable = 0xCD500000ull;       // chosen value: ~3.2 GiB, like an application ([memory] app_memory_mb overrides)
 constexpr uint64_t kUsedMemoryOverhead = 0x4000000ull;          // chosen value: 64 MiB added to the heap size for "used"
@@ -121,8 +119,8 @@ uint32_t get_info(uint32_t type, uint32_t handle, uint64_t sub, uint64_t& out) {
             out = entropy_seed() ^ (sub * kGoldenRatio64);
             return kernel::kOk;
         }
-        case 12: out = kAslrRegionAddress; return kernel::kOk;                // AslrRegionAddress
-        case 13: out = kAslrRegionSize; return kernel::kOk;                   // AslrRegionSize
+        case 12: out = mem::kAslrBase; return kernel::kOk;                    // AslrRegionAddress
+        case 13: out = mem::kAslrSize; return kernel::kOk;                    // AslrRegionSize
         case 14: out = mem::kStackBase; return kernel::kOk;                   // StackRegionAddress
         case 15: out = mem::kStackSize; return kernel::kOk;                   // StackRegionSize
         case 16:                                                              // SystemResourceSizeTotal: main.npdm (title profile)

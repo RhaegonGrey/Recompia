@@ -23,6 +23,7 @@
 #include "nxrt/game.h"
 #include "nxrt/log.h"
 #include "nxrt/runtime.h"
+#include "nxrt/screenshot.h"
 #include "nxrt/module.h"
 #include "nxrt/svc.h"
 #include "nxrt/timestep.h"
@@ -80,9 +81,7 @@ struct State {
     std::string message;
     std::string verdict;
 
-    ScreenshotFn shot_fn = nullptr;
     void (*shot_flush)() = nullptr;
-    void* shot_user = nullptr;
     MouseSinkFn mouse_sink = nullptr;
     KeySinkFn key_sink = nullptr;
     std::vector<std::string> keys_down;      // names the key steps pressed and not yet released (released when the run ends)
@@ -163,8 +162,21 @@ std::string parent_dir(const std::string& p) {
 
 std::string join(const std::string& a, const std::string& b) {
     if (a.empty()) return b;
+#if defined(_WIN32)
+    constexpr char kSep = '\\';
+#else
+    constexpr char kSep = '/';
+#endif
     const char l = a.back();
-    return (l == '\\' || l == '/') ? a + b : a + "\\" + b;
+    std::string p = (l == '\\' || l == '/') ? a + b : a + kSep + b;
+#if !defined(_WIN32)
+    // A configured Windows path ([test] out, [test] shot_dir) names one folder in the Win32 API and another on POSIX, where a backslash
+    // is an ordinary character: this tool opens its files with std::fopen, which does not go through the shim's native_path, so a
+    // backslash here created a file called "testout\result.json" in the working directory.
+    for (char& c : p)
+        if (c == '\\') c = '/';
+#endif
+    return p;
 }
 
 
@@ -559,7 +571,6 @@ bool finished() { return S().finished; }
 int exit_code() { return S().exit_code; }
 const std::vector<Checkpoint>& checkpoints() { return S().cps; }
 uint64_t last_hash() { return S().last_hash; }
-void set_screenshot_provider(ScreenshotFn fn, void* user) { S().shot_fn = fn; S().shot_user = user; }
 void set_screenshot_flush(void (*fn)()) { S().shot_flush = fn; }
 void set_mouse_sink(MouseSinkFn fn) { S().mouse_sink = fn; }
 void set_key_sink(KeySinkFn fn) { S().key_sink = fn; }
@@ -607,15 +618,10 @@ bool key_event(const std::string& name, bool down) {
 bool take_shot(const std::string& name, std::string* why_not) {
     State& s = S();
     const std::string path = join(s.shot_dir, name + ".png");
-    if (!s.shot_fn) {
+    if (!screenshot::request(path.c_str(), false)) {
         s.missing_shots.push_back(name);
-        if (why_not) *why_not = "no screenshot provider registered (the graphics layer has not hooked in yet)";
-        NXLOG_W("tt", "@shot %s: no screenshot provider", name.c_str());
-        return false;
-    }
-    if (!s.shot_fn(path.c_str(), s.shot_user)) {
-        s.missing_shots.push_back(name);
-        if (why_not) *why_not = "the screenshot provider failed";
+        if (why_not) *why_not = "no screenshot provider registered (the graphics layer has not hooked in yet) or it failed";
+        NXLOG_W("tt", "@shot %s: no screenshot provider, or it failed", name.c_str());
         return false;
     }
     s.shots.push_back(name + ".png");

@@ -55,7 +55,14 @@ file(GLOB NX_LIFTER_SOURCES CONFIGURE_DEPENDS
 function(_nxrecomp_info game out)
   get_property(json GLOBAL PROPERTY NXRECOMP_INFO_${game})
   if(NOT json)
-    execute_process(COMMAND "${NX_PYTHON}" -m nxrecomp build-info --game ${game} WORKING_DIRECTORY "${NXRECOMP_ROOT}"
+    # The target architecture decides the lifted code's x86-only flags (-mcx16). CMAKE_SYSTEM_PROCESSOR is empty when the
+    # toolchain file sets CMAKE_SYSTEM_NAME without it (recomp/cmake/clang-cl.cmake on Windows does exactly that), so fall
+    # back to the host's: these builds are native, never cross.
+    set(_nx_arch "${CMAKE_SYSTEM_PROCESSOR}")
+    if(NOT _nx_arch)
+      set(_nx_arch "${CMAKE_HOST_SYSTEM_PROCESSOR}")
+    endif()
+    execute_process(COMMAND "${NX_PYTHON}" -m nxrecomp build-info --game ${game} --arch "${_nx_arch}" WORKING_DIRECTORY "${NXRECOMP_ROOT}"
                     OUTPUT_VARIABLE json RESULT_VARIABLE rc ERROR_VARIABLE err)
     if(NOT rc EQUAL 0)
       message(FATAL_ERROR "nxrecomp build-info --game ${game} failed (${NX_PYTHON}): ${err}")

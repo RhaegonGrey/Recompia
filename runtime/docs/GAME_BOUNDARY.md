@@ -34,7 +34,7 @@ registered, so the runtime runs without a game and skips what needs one). It is 
 | `poll_sleeps`, `poll_sleep_count` | `SleepThread` call sites inside the game's polling loops that get a shorter sleep (`[sched] poll_sleeps`) | `pkp_core.cpp` |
 | `poll_waits`, `poll_wait_count` | `SleepThread` call sites inside polling loops that wait for a value in guest memory, with what each loop watches; the sleep ends when the value has changed (`[kernel] poll_wait`) | `pkp_core.cpp` |
 | `settings_doc` (`setting_doc::Row` list) | the keys of the game's own ini section; `CONFIG.md`'s game section and the launcher's game-ini schema are generated from it (`apps/settings_doc.cpp`, `runtime/scripts/gen_settings_doc.ps1`) | `pkp_data.cpp`; the rows are in `pkp_settings_table.cpp` |
-| `render` (`game::Render`, `game_render.h`) | graphics facts read once by the NVN back end and the extras: the texture shape `[nvn] readback_defer` may defer, the camera uniform block for temporal upscaling and its jitter, the tone-map shader matches | `pkp_render_info.cpp` |
+| `render` (`game::Render`, `game_render.h`) | graphics facts read once by the NVN back end and the extras: the texture shape `[nvn] readback_defer` may defer, the camera uniform block for temporal upscaling and its jitter, the tone-map shader matches, the compute loop guards, whether its 2D can be left out of the picture (`ui_after_picture`, `nxrt/ui_layer.h`) | `pkp_render_info.cpp` |
 
 ## How the game layer registers
 

@@ -365,6 +365,7 @@ void replay_lists(Frame& f, const std::vector<Ref<CmdList>>& lists);
 void replay_end_submit(Frame& f);
 void replay_request_trace();      // trace the next whole presented frame (any thread)
 void replay_shutdown();           // destroys pipelines and layouts (render thread, device idle)
+void replay_note_presented(Texture* t);   // the present: the game shows t (render thread; nvn_replay_ui.cpp, nxrt/ui_layer.h)
 
 // ---- [nvn] gpu_split (nvn_gpu.cpp) -----------------------------------------------------------------------------------------
 // The recording time of one piece in TSC ticks (ft::tsc; 0: off) and the most pieces one submission is cut into.

@@ -151,7 +151,7 @@ export function startGamepadNav() {
       else if (b === BTN.LB) switchPage(-1);
       else if (b === BTN.RB) switchPage(1);
     }
-    if (cur.scroll) document.getElementById('view')?.scrollBy({ top: cur.scroll * 22 });
+    if (cur.scroll) (document.querySelector('dialog[open]') || document.getElementById('view'))?.scrollBy({ top: cur.scroll * 22 });   // a long question scrolls itself
   };
   requestAnimationFrame(tick);
 }

@@ -1,0 +1,6 @@
+# Shell scripts run under sh/bash on every host - CI (Linux, macOS), WSL, git-bash - so their working-tree line
+# endings are LF whatever core.autocrlf says. Without this a Windows checkout hands WSL a script whose `set -eu`
+# is `set -eu\r`, which dash rejects with "Illegal option -". The macOS zip's "Self-sign (optional).command" is
+# the same script under another name.
+*.sh      text eol=lf
+*.command text eol=lf

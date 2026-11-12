@@ -3,11 +3,40 @@
 //!   cargo run --example shader_setup -- <game dir> <romfs> <exefs/main> <tools dir> [limit] [jobs]
 //! Builds <game dir>/shader_cache/spirv exactly as the launcher's Set up does; `limit` translates only that many blocks.
 
+// host.rs reaches the launcher's own modules, so an example carries the same set the binary declares (main.rs), by path.
+#[allow(dead_code, clippy::all)]
+#[path = "../src/config.rs"]
+mod config;
+#[allow(dead_code)]
+#[path = "../src/download.rs"]
+mod download;
+#[allow(dead_code, clippy::all)]
+#[path = "../src/dump.rs"]
+mod dump;
+#[allow(dead_code, clippy::all)]
+#[path = "../src/fsutil.rs"]
+mod fsutil;
+#[allow(dead_code)]
+#[path = "../src/gamebuild.rs"]
+mod gamebuild;
+#[allow(dead_code)]
 #[path = "../src/harness.rs"]
 mod harness;
 #[allow(dead_code)]
 #[path = "../src/host.rs"]
 mod host;
+#[allow(dead_code, clippy::all)]
+#[path = "../src/ini.rs"]
+mod ini;
+#[allow(dead_code, clippy::all)]
+#[path = "../src/paths.rs"]
+mod paths;
+#[allow(dead_code)]
+#[path = "../src/runtime_api.rs"]
+mod runtime_api;
+#[allow(dead_code, clippy::all)]
+#[path = "../src/settings.rs"]
+mod settings;
 #[allow(dead_code)]
 #[path = "../src/shader_archive.rs"]
 mod shader_archive;

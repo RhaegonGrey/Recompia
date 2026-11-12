@@ -23,6 +23,8 @@
 #include <thread>
 #include <unordered_map>
 #include <vector>
+
+#include "nvn_thread.h"
 #if defined(_MSC_VER) && defined(_M_X64)
 #include <intrin.h>
 #endif
@@ -131,7 +133,7 @@ struct AsyncJob {
 std::mutex g_aw_mu;
 std::condition_variable g_aw_cv;
 std::deque<AsyncJob> g_aw_q;
-std::vector<std::thread> g_aw_threads;
+std::vector<BigThread> g_aw_threads;
 bool g_aw_stop = false;                              // stays set after pipeline_shutdown: later requests build at the draw / dispatch
 std::atomic<uint64_t> g_aw_built{0}, g_aw_failed{0}, g_aw_skipped{0};
 
@@ -172,7 +174,10 @@ bool aw_push(AsyncJob&& j, bool front) {
     if (g_aw_stop) return false;
     if (g_aw_threads.empty()) {
         const int n = static_cast<int>(std::clamp<int64_t>(nxrt::config_get_int("nvn", "async_whole_threads", 1), 1, 4));
-        for (int i = 0; i < n; ++i) g_aw_threads.emplace_back(aw_main);
+        for (int i = 0; i < n; ++i) {
+            g_aw_threads.emplace_back();
+            g_aw_threads.back().start("nvn-async-pipe", 16, aw_main);   // pipeline builds run the Metal shader compiler (deep)
+        }
         NXLOG_I(kTag, "async pipelines: %d background thread%s for pipelines that would be built at a draw or a dispatch", n, n == 1 ? "" : "s");
     }
     if (front) g_aw_q.push_front(std::move(j));
@@ -193,7 +198,7 @@ std::shared_ptr<PipeUpgrade> aw_queue(const GraphicsKey& key, const ProgLayout& 
 
 // Before the device is torn down: after prewarm_shutdown, before gpl_stop (pipeline_shutdown). A running build finishes first (join).
 void aw_stop() {
-    std::vector<std::thread> t;
+    std::vector<BigThread> t;
     {
         std::lock_guard<std::mutex> lk(g_aw_mu);
         g_aw_stop = true;
@@ -222,9 +227,25 @@ std::atomic<bool> g_cache_ready{false};
 void ensure_cache() {
     if (g_cache_ready.load(std::memory_order_acquire)) return;
     std::lock_guard<std::mutex> lk(g_cache_mu);       // the prewarm workers and the render thread may get here together
+    static constexpr const char* kDefaultPipelineCache = "pipeline_cache.bin";
     if (g_cache_tried) return;
     g_cache_tried = true;
-    g_cache_path = config_get_str("nvn", "pipeline_cache", "pipeline_cache.bin");
+#if defined(__APPLE__)
+    // MoltenVK compiles under the lock of the VkPipelineCache a pipeline is made with, so with several build threads one slow
+    // pipeline holds the others up; without a cache it keeps its own per-pipeline caches, and Metal's own shader cache still holds
+    // the compiled code (the executable's __info_plist identity, pkp_build.py write_identity). auto (the default) keeps the cache:
+    // it is what makes a start fast on this port. off: build every pipeline without one.
+    if (config_get_str("nvn", "pipeline_cache_moltenvk", "auto") == "off") {
+        NXLOG_I(kTag, "pipeline_cache_moltenvk = off: pipelines are built without a VkPipelineCache");
+        g_cache_ready.store(true, std::memory_order_release);
+        return;
+    }
+#endif
+    // On by default on every host, macOS included. It was off on macOS for a while: with pipeline_cache.bin present the game
+    // stopped after NVN init, before its first frame. That A/B ran while the pool shadow copy wrote past its buffer and
+    // corrupted the driver's heap (nvn_pool_copy.cpp), and with that fixed the cache loads and the game runs; leaving it off
+    // costs a Metal compile of every pipeline at start (tens of seconds on a cold cache, seen as a black window).
+    g_cache_path = config_get_str("nvn", "pipeline_cache", kDefaultPipelineCache);
     std::vector<char> data;
     if (!g_cache_path.empty()) {
         if (FILE* f = std::fopen(g_cache_path.c_str(), "rb")) {          // one read: the file can be hundreds of MB after a shader preparation
@@ -255,12 +276,12 @@ void ensure_cache() {
 // [nvn] pipeline_cache_save: whether the pipeline cache is ever read back from the driver and written to pipeline_cache. auto (default):
 // not with Intel's Windows driver, whose vkGetPipelineCacheData faults while copying the data out (igvk64.dll, UHD Graphics on a 12th-gen
 // i3, driver 0x001957f1: an access violation on the first save, 3 s into every start; #270); the cache file is still loaded at start,
-// and the driver keeps its own disk cache. Under Wine the driver is Mesa's, so auto keeps the save there. on: always. off: never.
+// and the driver keeps its own disk cache. On Linux the driver is Mesa's, so auto keeps the save there. on: always. off: never.
 bool cache_save_on() {
     static const bool on = [] {
         const std::string v = config_get_str("nvn", "pipeline_cache_save", "auto");
         const uint32_t vendor = device().properties().vendorID;
-        const bool intel_win = vendor == 0x8086 && !host_is_wine();
+        const bool intel_win = vendor == 0x8086 && !host_is_linux();
         const bool r = v == "on" || v == "true" || v == "1" || ((v == "auto" || v.empty()) && !intel_win);
         NXLOG_I(kTag, "pipeline_cache_save = %s (%s, vendor 0x%04x%s)", v.c_str(), r ? "on" : "off", vendor,
                 intel_win && !r ? ": Intel's Windows driver faults reading the cache back, #270" : "");
@@ -404,7 +425,7 @@ static VkShaderModule create_module(const std::vector<uint32_t>& words, const ch
         }
     }
     // [nvn] loop_guard: the game's compute loops whose count is a constant buffer word get it limited (game::Render::loop_guards,
-    // spirv_limit_count). auto (default): by the table's size on NVIDIA and under Wine (Mesa's drivers: RADV on the Deck and other AMD
+    // spirv_limit_count). auto (default): by the table's size on NVIDIA and on Linux (Mesa's drivers: RADV on the Deck and other AMD
     // handhelds, #531); a plain cap of 16384 elsewhere (AMD's Windows driver crashed making pokopia-native's size-query version). A loop of
     // up to 16384 items a lane can still pass the Deck's 5 s GPU timeout, so the table size is used wherever it builds. table / cap: that on
     // any GPU. off: never.
@@ -413,9 +434,9 @@ static VkShaderModule create_module(const std::vector<uint32_t>& words, const ch
         if (!gr || !gr->loop_guard_count) return 0;
         const std::string v = config_get_str("nvn", "loop_guard", "auto");
         const uint32_t vendor = device().properties().vendorID;
-        const int m = v == "off" || v == "false" || v == "0" ? 0 : v == "table" ? 1 : v == "cap" ? 2 : vendor == 0x10de || host_is_wine() ? 1 : 2;
+        const int m = v == "off" || v == "false" || v == "0" ? 0 : v == "table" ? 1 : v == "cap" ? 2 : vendor == 0x10de || host_is_linux() ? 1 : 2;
         NXLOG_I(kTag, "loop_guard = %s (%s, vendor 0x%04x%s)", v.c_str(), m == 0 ? "off" : m == 1 ? "table size" : "cap 16384", vendor,
-                host_is_wine() ? ", Wine" : "");
+                host_is_linux() ? ", Linux" : "");
         return m;
     }();
     std::vector<uint32_t> guarded[2];
@@ -1262,7 +1283,7 @@ bool async_whole_on() {
         // [nvn] gpl_ab keeps a finished build as the measured alternative instead of swapping it in: an empty entry would stay empty
         const bool ab = r && nxrt::config_get_int("nvn", "gpl_ab", 0) > 0;
         if (ab) r = false;
-        NXLOG_I(kTag, "async_whole %s (%s%s, %s)", r ? "on" : "off", v.c_str(), ab ? ", off with gpl_ab" : "", nxrt::host_is_wine() ? "Wine" : "not Wine");
+        NXLOG_I(kTag, "async_whole %s (%s%s)", r ? "on" : "off", v.c_str(), ab ? ", off with gpl_ab" : "");
         return r;
     }();
     return on;

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Play mode: input event routing (handle_event), pad polling and rumble.
 #include "play_state.h"
+#include "nxrt/key_state.h"
 
 namespace nxrt::play {
 using namespace detail;
@@ -16,6 +17,12 @@ uint32_t jc2_button_bit(uint8_t b) {
         case 4: return 1u << 4;
         default: return 0;
     }
+}
+
+// nxrt/key_state.h's name lookup: key settings store SDL's scancode names (parse_input also takes any case); a mouse input is not a key.
+int key_scancode_by_name(const char* name) {
+    InputId id;
+    return name && parse_input(name, &id) && id.kind == InKind::Key ? id.code : -1;
 }
 
 void vib_sink(uint32_t slot, int hand, const hid::VibrationValue& v, void*) {
@@ -43,6 +50,7 @@ void handle_event(const input::Event& e, uint64_t now) {
     G& st = g();
     using input::EventType;
     st.events++;
+    if (e.type == EventType::KeyUp) key_state::set(e.u.key.scancode, false);   // before any early return below: a release is never lost
     // rebinding capture comes first: the page asked for the next input
     if (st.capture_state.load() == 1) {
         InputId id;
@@ -94,7 +102,10 @@ void handle_event(const input::Event& e, uint64_t now) {
                 return;
             }
             if (!(e.flags & input::kFlagRepeat)) mm::pointer().on_other_input();
-            if (!(e.flags & input::kFlagRepeat) && !menu_blocked) st.engine->key(e.u.key.scancode, true, now);
+            if (!(e.flags & input::kFlagRepeat) && !menu_blocked) {
+                st.engine->key(e.u.key.scancode, true, now);
+                key_state::set(e.u.key.scancode, true);   // the keys the game gets, so a mod does not see a key typed into a menu
+            }
             break;
         case EventType::KeyUp:
             st.engine->key(e.u.key.scancode, false, now);
@@ -145,6 +156,7 @@ void handle_event(const input::Event& e, uint64_t now) {
         case EventType::WindowFocusLost:
             audio::set_muted(st.window && st.settings.audio.mute_unfocused);
             st.engine->release_all(now);
+            key_state::clear();
             st.mouse1 = false;
             st.jc2_buttons = 0;
             mm::pointer().on_focus_lost();

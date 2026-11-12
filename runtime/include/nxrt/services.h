@@ -129,8 +129,8 @@ std::string save_dir();
 // served from here, as the console serves a patch over its base game. Set by the launcher for an update dumped without the base game's
 // files under it (fork #128).
 std::string romfs_base_dir();
-// [fs] romfs_mod (default empty: none): a romfs-shaped folder layered above [fs] romfs and [fs] romfs_base. Its files win, shared
-// folders merge, and files found only in the mod are served too.
+// [fs] romfs_mod (default empty: none): a romfs-shaped folder layered above [fs] romfs, [fs] romfs_base and the mod loaders' folders
+// (services_api.h fsapi::set_romfs_overlays). Its files win, shared folders merge, and files found only in the mod are served too.
 std::string romfs_mod_dir();
 // [fs] aoc_dir (default empty: none): the title's add-on content (DLC), one subfolder per add-on named by its 16-digit hex id, each with
 // its RomFS in romfs/ (<aoc_dir>/0400A3A01EE4D001/romfs/...). Only add-ons of this title count: id & ~0xFFF == program id + 0x1000 (the

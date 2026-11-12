@@ -179,6 +179,28 @@ bool init(const Config& cfg) {
     }
     g_default_heap.store(align_up(heap, kAllocGranularity));
 
+#if defined(__APPLE__)
+    // macOS: the executable reserves the guest address space in its Mach-O header (cmake/guest_segment.py); the kernel maps
+    // it at exec, before dyld, which is what keeps libmalloc's xzone reservations out of it. dyld slides the image, so the
+    // reserved range starts a little above 0x7000000000; the layout must still fit, or every fixed reservation below fails.
+    uint64_t guest_lo = 0, guest_hi = 0;
+    if (nxos_guest_reservation(&guest_lo, &guest_hi)) {
+        const uint64_t lo = kMainBase, hi = kKernelBase + kKernelSize;
+        if (lo < guest_lo || hi > guest_hi) {
+            NXLOG_E(kTag, "init failed: the guest layout [%llx, %llx) is outside the executable's __GUEST segment [%llx, %llx): "
+                          "link with nxrt_add_guest_segment (cmake/guest_segment.cmake)",
+                    static_cast<unsigned long long>(lo), static_cast<unsigned long long>(hi),
+                    static_cast<unsigned long long>(guest_lo), static_cast<unsigned long long>(guest_hi));
+            return false;
+        }
+        NXLOG_I(kTag, "guest address space reserved by the executable: [%llx, %llx)", static_cast<unsigned long long>(guest_lo),
+                static_cast<unsigned long long>(guest_hi));
+    } else {
+        NXLOG_W(kTag, "no __GUEST segment in the executable: libmalloc's reservations may take the guest layout "
+                      "(link with nxrt_add_guest_segment, cmake/guest_segment.cmake)");
+    }
+#endif
+
     if (cfg.reserve_regions) {
         if (!reserve_fixed(kStackBase, kStackSize, "stack")) {
             NXLOG_E(kTag, "init failed: the stack region could not be reserved");
@@ -451,10 +473,10 @@ bool heap_create(uint64_t reserve_bytes) {
                 static_cast<unsigned long long>(size), static_cast<unsigned long long>(kHeapMax));
         return false;
     }
-    // [memory] heap_section: auto (default) = a section unless running under Wine (memory.h), 1 = always, 0 = never
+    // [memory] heap_section: auto (default) = a section unless the host is Linux (memory.h), 1 = always, 0 = never
     const std::string mode = nxrt::config_get_str("memory", "heap_section", "auto");
-    const bool wine = host_is_wine();
-    if (mode == "0" || (mode != "1" && wine)) {
+    const bool linux_kernel = host_is_linux();
+    if (mode == "0" || (mode != "1" && linux_kernel)) {
         void* p = VirtualAlloc(reinterpret_cast<void*>(kHeapBase), static_cast<SIZE_T>(size), MEM_RESERVE, PAGE_NOACCESS);
         if (reinterpret_cast<uint64_t>(p) != kHeapBase) {
             NXLOG_E(kTag, "heap_create: VirtualAlloc(MEM_RESERVE %llu MiB) at %llx failed, error %lu", static_cast<unsigned long long>(size >> 20),
@@ -467,7 +489,7 @@ bool heap_create(uint64_t reserve_bytes) {
         g_heap_cls.assign(static_cast<size_t>(size / kPage), 0);
         g_committed = 0;
         NXLOG_I(kTag, "heap: private memory of %llu MiB at %llx, no section (%s): no alias views, pools import at their own address",
-                static_cast<unsigned long long>(size >> 20), static_cast<unsigned long long>(kHeapBase), wine ? "Wine" : "[memory] heap_section = 0");
+                static_cast<unsigned long long>(size >> 20), static_cast<unsigned long long>(kHeapBase), linux_kernel ? "Linux" : "[memory] heap_section = 0");
         return true;
     }
     HANDLE sec = CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE | SEC_RESERVE,

@@ -131,7 +131,7 @@ pub fn reset_link_play(dir: &Path) -> Result<bool, String> {
 /// Used by Play and setup: the ini keys the launcher owns. pkp.exe reads every path from pkp.ini (a pkp.ini next to it makes
 /// the game folder its working directory), so it needs no command-line paths.
 /// A path for pkp.ini: relative to the game folder (forward slashes) when it lies inside it, so the folder can be moved or copied to
-/// another PC or to SteamOS/Proton with its dump and saves; absolute otherwise. The game resolves relative paths against its folder.
+/// another PC or to a Steam Deck with its dump and saves; absolute otherwise. The game resolves relative paths against its folder.
 pub fn portable(dir: &Path, p: &str) -> String {
     let full = Path::new(p.trim());
     match (fs::canonicalize(dir), fs::canonicalize(full)) {

@@ -23,9 +23,9 @@ namespace nxrt::kernel {
 // 1 ms or 15.6 ms grid, so the wait runs on a high-resolution waitable timer (100 ns units); Sleep() is only the fallback.
 // A zero or negative span yields, as on the console.
 namespace {
-// Short sleeps as real sleeps: under Wine, NtDelayExecution (not alertable) is a nanosleep on the host, good to tens of microseconds,
+// Short sleeps as real sleeps: on Linux, NtDelayExecution (not alertable) is a nanosleep on the host, good to tens of microseconds,
 // so a 100 us poll costs no processor time, but wakes ~50 us late (Linux timer slack). On Windows it rounds up to the timer's grid
-// (about half a millisecond or more). [kernel] short_sleep = auto | yield | sleep | wait (sleep and wait only under Wine; Windows always
+// (about half a millisecond or more). [kernel] short_sleep = auto | yield | sleep | wait (sleep and wait only on Linux; Windows always
 // yields). auto: wait on a handheld (host_is_handheld; sleep when ntdll has no address wait), yield elsewhere.
 // Measured in game with sleep against yield: on the PC, uncapped, yielding 231 fps on 4.1 cores and sleeping 198 fps on 3.8 cores; on a Steam Deck LCD, where the frame waits on the GPU anyway and CPU and GPU share one power budget,
 // sleeping 54 fps (1% lows ~30) against 52 yielding (lows ~27).
@@ -34,8 +34,8 @@ namespace {
 //
 // On a Steam Deck OLED under Proton the same call measured ~1.1 ms for a 100 us request (a 60 s trace in the world: 46,000 sleeps on each
 // fence-polling thread). NtDelayExecution hands the processor over first (NtYieldExecution) and then sleeps in select(); which of the
-// two costs the millisecond with every core busy is not known. short_sleep = wait (auto on a Wine handheld) sleeps on the host's timed
-// address wait instead (early_wake.cpp: under Wine a futex wait with the host kernel's timer, no hand-over, no wineserver call), asked
+// two costs the millisecond with every core busy is not known. short_sleep = wait (auto on a Linux handheld) sleeps on the host's timed
+// address wait instead (early_wake.cpp: on Linux a futex wait with the kernel's timer, no hand-over, no wineserver call), asked
 // for the span less the wait's learned lateness, with a remainder of kWaitSpinMaxNs or less spun through. It is also the wait the early
 // wake ends (nxrt/early_wake.h). [kernel] short_sleep_max_us (default 200) is the longest span handled as a short sleep.
 using NtDelayExecutionFn = LONG(WINAPI*)(BOOLEAN, PLARGE_INTEGER);
@@ -48,9 +48,18 @@ const ShortCfg& short_cfg() {
     static const ShortCfg cfg = [] {
         ShortCfg c;
         HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
-        const bool wine = host_is_wine();
+#if defined(_WIN32)
+        const bool linux_kernel = host_is_linux();
+#endif
         const std::string m = config_get_str("kernel", "short_sleep", "auto");
-        const bool hosted = wine && (m == "sleep" || m == "wait" || (m == "auto" && host_is_handheld()));   // not yielded through
+#if defined(_WIN32)
+        const bool hosted = linux_kernel && (m == "sleep" || m == "wait" || (m == "auto" && host_is_handheld()));   // not yielded through
+#else
+        // No ntdll on the POSIX hosts, so NtDelayExecution (short_sleep = sleep) has no meaning there and the address wait is the only
+        // short sleep that is not a yield: the futex in early_wake.cpp. auto keeps the Windows rule, wait on a handheld (a Steam Deck or
+        // a Legion Go S polls its GPU fences and shares one power budget with the GPU), yield elsewhere.
+        const bool hosted = m == "wait" || (m == "auto" && host_is_handheld());
+#endif
         if (hosted && m != "sleep" && detail::address_wait_available()) {
             c.mode = detail::ShortSleep::Wait;
         } else if (hosted && ntdll) {   // sleep, or no address wait in this ntdll
@@ -58,10 +67,15 @@ const ShortCfg& short_cfg() {
             if (c.delay) c.mode = detail::ShortSleep::Delay;
         }
         c.max_ns = std::clamp<int64_t>(config_get_int("kernel", "short_sleep_max_us", 200), 0, 5000) * 1000;
+#if defined(_WIN32)
+        const char* const host = !linux_kernel ? ", Windows" : m == "auto" ? (host_is_handheld() ? ", a handheld" : ", not a handheld") : "";
+#else
+        const char* const host = m == "auto" ? (host_is_handheld() ? ", a handheld" : ", not a handheld") : "";
+#endif
         NXLOG_I("kernel", "short sleeps (up to %lld us): %s ([kernel] short_sleep = %s%s)", static_cast<long long>(c.max_ns / 1000),
-                c.mode == detail::ShortSleep::Wait ? "timed address wait (RtlWaitOnAddress), lateness corrected"
+                c.mode == detail::ShortSleep::Wait ? "timed address wait, lateness corrected"
                 : c.mode == detail::ShortSleep::Delay ? "slept (NtDelayExecution)" : "yielded through",
-                m.c_str(), !wine ? ", Windows" : m == "auto" ? (host_is_handheld() ? ", a handheld" : ", not a handheld") : "");
+                m.c_str(), host);
         return c;
     }();
     return cfg;

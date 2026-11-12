@@ -6,6 +6,7 @@
 // level. Layouts are tracked per image (all levels and layers share one layout). Samplers are cached by their NVN state.
 // Readback (download_texture) copies a render target back and tiles it into the game's storage.
 #include "nvn_gpu_texture_internal.h"
+#include "nvn_thread.h"   // BigThread: the texture-arming worker gets a stack of its own (the guest code cannot exhaust it)
 
 namespace nxrt::nvn::be {
 static uint64_t g_wgen_next = 0;                        // render thread only (move_layout, the replay)
@@ -330,7 +331,7 @@ void copy_regions_to_image(Frame& f, TexGpu& g, VkBuffer buf, const std::vector<
 // image uploaded once kept the old glyph set and every later new glyph drew as nothing. The storage pages of an uploaded coherent texture
 // are therefore armed in one write-watch region over the heap (nxrt/write_watch.h), before the storage is read for the upload. At the start
 // of every submission the pages the CPU wrote since are handed to textures_cpu_wrote, as a flush of them would be: the textures there are
-// uploaded again before their next use (and armed again). A texture the GPU renders to is not armed. [nvn] tex_write_watch = auto (off under Wine) | true | false.
+// uploaded again before their next use (and armed again). A texture the GPU renders to is not armed. [nvn] tex_write_watch = auto (off on Linux) | true | false.
 static mem::ww::Region* g_tex_ww = nullptr;
 static bool g_tex_ww_tried = false;
 static std::vector<uint64_t> g_tex_ww_pages;
@@ -338,12 +339,12 @@ static std::vector<uint64_t> g_tex_ww_pages;
 static mem::ww::Region* tex_ww() {
     if (!g_tex_ww_tried) {
         g_tex_ww_tried = true;
-        // auto (default): off under Wine (Proton, SteamOS). There the heap is private memory imported as amdgpu userptr BOs, and
+        // auto (default): off on Linux (Proton or native). There the heap is private memory imported as amdgpu userptr BOs, and
         // making those pages read-only invalidates the BOs: the next submission loses the device (#169, Legion Go S and Steam Deck).
         const std::string v = nxrt::config_get_str("nvn", "tex_write_watch", "auto");
-        const bool on = v == "auto" ? !nxrt::host_is_wine() : (v == "on" || v == "1" || v == "true");
+        const bool on = v == "auto" ? !nxrt::host_is_linux() : (v == "on" || v == "1" || v == "true");
         NXLOG_I(kTag, "tex_write_watch %s (%s%s)", on ? "on" : "off", v.c_str(),
-                v == "auto" ? (nxrt::host_is_wine() ? ", Wine" : ", not Wine") : "");
+                v == "auto" ? (nxrt::host_is_linux() ? ", Linux" : ", not Linux") : "");
         if (on && mem::heap_exists())
             g_tex_ww = mem::ww::region_create(mem::kHeapBase, mem::heap_reserved());
     }
@@ -446,7 +447,9 @@ void tex_ww_arm_later(Texture* t, const TexGpu& g, bool have_hash, uint64_t hash
     std::lock_guard<std::mutex> lk(aq.mu);
     if (!aq.started) {
         aq.started = true;
-        std::thread(arm_worker).detach();
+        BigThread t;
+        t.start("nvn-tex-arm", 16, arm_worker);
+        t.detach();
     }
     ArmJob j;
     j.t = Ref<Texture>::share(t);

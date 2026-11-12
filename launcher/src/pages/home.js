@@ -39,7 +39,11 @@ function releaseCard(r) {
   </button>`;
 }
 
-function crashCard(game) {
+// A mod can be what stopped the game: one start without mods tells, and leaves the mods as they are.
+const withoutModsButton = (s) =>
+  `<button class="btn sm" data-act="play-without-mods" ${s.app?.readiness?.kind === 'ready' && !s.starting ? '' : 'disabled'} title="${esc(t('Starts the game once without mods. Your mods and their settings stay as they are.'))}">${icon('play')}${esc(t('Start without mods'))}</button>`;
+
+function crashCard(game, s) {
   const files = (game.files ?? []).filter((f) => f.fresh || f.name === 'pkp.log');
   return `<div class="home-card glass strong" role="alert">
     <div class="home-card-head">
@@ -47,7 +51,7 @@ function crashCard(game) {
       <button class="btn quiet sm icon-only" data-act="dismiss" aria-label="${esc(t('Dismiss'))}" title="${esc(t('Dismiss'))}">${icon('x')}</button>
     </div>
     <p class="selectable">${esc(fromBackend(game.message))}</p>
-    ${files.length ? `<div class="cluster">${files.map((f) => `<button class="btn sm" data-open="${esc(f.name)}" title="${esc(f.name)}">${icon('file-text')}${esc(REPORT_LABEL[f.name] ?? f.name)}</button>`).join('')}</div>` : ''}
+    <div class="cluster">${files.map((f) => `<button class="btn sm" data-open="${esc(f.name)}" title="${esc(f.name)}">${icon('file-text')}${esc(REPORT_LABEL[f.name] ?? f.name)}</button>`).join('')}${withoutModsButton(s)}</div>
   </div>`;
 }
 
@@ -138,7 +142,7 @@ export function render(el, ctx) {
     drawTask(s);
 
     const crashed = s.game?.state === 'exited' && s.game.crashed && !crashDismissed;
-    patch(part('notices'), (s.updateError ? updateErrorCard(s) : '') + (crashed ? crashCard(s.game) : ''));
+    patch(part('notices'), (s.updateError ? updateErrorCard(s) : '') + (crashed ? crashCard(s.game, s) : ''));
     el.firstElementChild.classList.toggle('noticed', !!(crashed || s.updateError));
 
     patch(part('news'), s.news.releases.slice(0, CARDS).map(releaseCard).join(''));
@@ -149,7 +153,7 @@ export function render(el, ctx) {
     if (!t || t.disabled) return;
     if (t.id === 'primary') store.perform(primaryAction(store.state).run, ctx.go);
     if (t.id === 'link-chip') ctx.go('linkplay');
-    if (t.id === 'discord-chip') api.openReleaseUrl({ url: DISCORD_URL }).catch((err) => toast(errText(err), 'error'));
+    if (t.id === 'discord-chip') api.openLink({ url: DISCORD_URL }).catch((err) => toast(errText(err), 'error'));
     if (t.id === 'online-chip') toggleOnline();
     if (t.dataset.tag) ctx.go('news', { tag: t.dataset.tag });
     if (t.dataset.open) api.openGameFile({ name: t.dataset.open }).catch((err) => toast(errText(err), 'error'));
@@ -158,6 +162,7 @@ export function render(el, ctx) {
       case 'cancel': return store.cancelUpdate();
       case 'pause': return store.pauseSetup();
       case 'stop-repack': return store.cancelRepack();
+      case 'play-without-mods': return store.play({ withoutMods: true });
       case 'dismiss':
         crashDismissed = true;
         return draw(store.state);

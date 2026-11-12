@@ -44,7 +44,7 @@ POLL_SUB = (                     # the plain loads of the lifted statements -> t
     (re.compile(r'\brdv\('), 'rdvp('),
     (re.compile(r'\bnx::ld<'), 'nx::ld_poll<'),
 )
-ATOMIC_LOAD = re.compile(r'__atomic_load_n|\bnx::ld_acq<|\bldxp128\(')
+ATOMIC_LOAD = re.compile(r'__atomic_load_n|\bnx::ld_acq<|\bnx::ldar<|\bldxp128\(')
 
 _cs = None
 

@@ -1,15 +1,15 @@
 // The UI kit. Controls return HTML strings of real inputs, restyled in components.css; pages listen with ordinary
 // `change` / `input` events (delegate on the page root). Inside row() they are named by the row's label.
 import {
-  ArrowLeft, Check, ChevronDown, ChevronRight, CircleAlert, CircleCheck, CircleX, Copy, Download, ExternalLink, Eye, EyeOff, FileArchive, FileText,
-  Folder, FolderOpen, Gamepad2, Globe, HardDrive, House, Info, Keyboard, LayoutDashboard, Link, LoaderCircle, Minus, Mouse, Newspaper, Palette, Pause,
-  Pencil, Play, Plus, RefreshCw, RotateCcw, Save, Settings, Square, Trash2, TriangleAlert, Upload, UserCheck, Users, Wrench, X,
+  ArrowDown, ArrowLeft, ArrowUp, Check, ChevronDown, ChevronRight, CircleAlert, CircleCheck, CircleX, Copy, Download, ExternalLink, Eye, EyeOff, FileArchive, FileText,
+  Folder, FolderOpen, Gamepad2, Globe, HardDrive, House, Info, Keyboard, LayoutDashboard, Link, LoaderCircle, Lock, LockOpen, Minus, Mouse, Newspaper, Palette, Pause,
+  Pencil, Play, Plus, Puzzle, RefreshCw, RotateCcw, Save, Settings, Square, Trash2, TriangleAlert, Trophy, Upload, UserCheck, Users, Wrench, X,
 } from 'lucide';
 
 const ICONS = {
-  ArrowLeft, Check, ChevronDown, ChevronRight, CircleAlert, CircleCheck, CircleX, Copy, Download, ExternalLink, Eye, EyeOff, FileArchive, FileText,
-  Folder, FolderOpen, Gamepad2, Globe, HardDrive, House, Info, Keyboard, LayoutDashboard, Link, LoaderCircle, Minus, Mouse, Newspaper, Palette, Pause,
-  Pencil, Play, Plus, RefreshCw, RotateCcw, Save, Settings, Square, Trash2, TriangleAlert, Upload, UserCheck, Users, Wrench, X,
+  ArrowDown, ArrowLeft, ArrowUp, Check, ChevronDown, ChevronRight, CircleAlert, CircleCheck, CircleX, Copy, Download, ExternalLink, Eye, EyeOff, FileArchive, FileText,
+  Folder, FolderOpen, Gamepad2, Globe, HardDrive, House, Info, Keyboard, LayoutDashboard, Link, LoaderCircle, Lock, LockOpen, Minus, Mouse, Newspaper, Palette, Pause,
+  Pencil, Play, Plus, Puzzle, RefreshCw, RotateCcw, Save, Settings, Square, Trash2, TriangleAlert, Trophy, Upload, UserCheck, Users, Wrench, X,
 };
 
 import { fromBackend } from './backend-text.js';
@@ -58,7 +58,7 @@ export function toast(message, kind = '') {
  *         setup (dlg) => void, called once the markup is in the page, to wire its controls }
  */
 export function confirm(opts = {}) {
-  const { title = '', body = '', html = '', ok = t('OK'), cancel = t('Cancel'), danger = false, alert = false, focusCancel = false, setup } = opts;
+  const { title = '', body = '', html = '', ok = t('OK'), cancel = t('Cancel'), danger = false, alert = false, focusCancel = false, setup, onAct = null } = opts;
   return new Promise((resolve) => {
     const dlg = document.createElement('dialog');
     dlg.className = 'modal glass strong';
@@ -81,6 +81,7 @@ export function confirm(opts = {}) {
     dlg.addEventListener('click', (e) => {
       const answer = e.target.closest('[data-answer]')?.dataset.answer;
       if (answer !== undefined) dlg.close(answer);
+      else if (onAct && e.target.closest('[data-act]')) onAct(e.target.closest('[data-act]'));
       else if (e.target === dlg) dlg.close('');   // the dialog has no padding, so only the backdrop hits it
     });
     dlg.showModal();

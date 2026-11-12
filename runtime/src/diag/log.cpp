@@ -160,6 +160,9 @@ const char* log_path() {
 
 void log_set_thread_name(const char* name) {
     std::snprintf(t_name, sizeof t_name, "%s", name ? name : "");
+#if !defined(_WIN32)
+    nxos_set_thread_name(t_name);   // the signal handler prints it without a libc call (an exhausted stack cannot take one)
+#endif
     ThreadName e;
     e.tid = GetCurrentThreadId();
     FILETIME created, exited, kernel_t, user_t;

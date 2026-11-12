@@ -3,6 +3,7 @@
 // state misc_reset() clears, and the service factories register_misc() registers.
 #pragma once
 #include <cstdint>
+#include <cstring>
 #include <memory>
 #include <mutex>
 #include <string>

@@ -18,7 +18,7 @@ export const RELAY_PORT = 47610;
 
 /** The project's public relay (launcher/relay, run as a service): where Internet hosts open their rooms and visitors find them. IPv4 only:
  *  the game's [net] relay takes no host name (coop_cfg_parse_ex). */
-export const PUBLIC_RELAY = '168.138.90.76:47610';
+export const PUBLIC_RELAY = '204.216.111.91:47610';
 
 const truthy = (s) => /^(1|true|yes|on)$/i.test((s || '').trim());
 const net = (key, value) => ({ file: 'pkp', section: 'net', key, value });

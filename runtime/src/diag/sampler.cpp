@@ -104,7 +104,7 @@ void loop() {
             tc.ContextFlags = CONTEXT_CONTROL | CONTEXT_INTEGER;
             if (GetThreadContext(h, &tc)) {
                 batch[i].n = static_cast<uint8_t>(detail::capture_stack(&tc, batch[i].frames, kDepth));
-                batch[i].waiting = after_syscall(tc.Rip) ? 1 : 0;
+                batch[i].waiting = after_syscall(NX_CONTEXT_PC(tc)) ? 1 : 0;
                 ok[i] = batch[i].n > 0;
             }
             ResumeThread(h);

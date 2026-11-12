@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <string>
 #include <vector>
 
 #include "nxrt/config.h"
@@ -16,6 +17,12 @@
 #include "nxrt/input.h"
 #include "nxrt/log.h"
 #include "pad_caps.h"
+
+#if defined(__APPLE__)
+#include <cstdlib>
+#include <mach-o/dyld.h>
+#include <unistd.h>
+#endif
 
 namespace nxrt::platform {
 namespace {
@@ -34,6 +41,7 @@ struct OpenPad {
     SDL_Gamepad* pad;
 };
 std::vector<OpenPad> g_pads;
+Uint64 g_last_pad_event_ms = 0;   // when SDL last reported a gamepad added or removed (pad_rescan's quiet check)
 
 input::Event make_event(input::EventType type, uint64_t ts) {
     input::Event e;
@@ -214,13 +222,12 @@ uint32_t xinput_slots() {
     return mask;
 }
 
-// Wine (Proton on SteamOS) does not deliver the device-change notifications SDL waits for before it rescans, so a pad switched off and on
-// again stayed unseen until a restart (#226). Under Wine the XInput slots are read once a second; when they change, the gamepad subsystem is
-// restarted, which rescans every backend (the pads present come back as SDL_EVENT_GAMEPAD_ADDED).
+// SDL only rescans when its backend says a device changed. Under Wine (Proton on SteamOS) nothing says it, so a pad switched off and on
+// again stayed unseen until a restart (#226). So: when the XInput slots change and SDL has reported no gamepad add or remove for two
+// seconds, the gamepad subsystem is restarted, which rescans every backend (the pads present come back as SDL_EVENT_GAMEPAD_ADDED). On
+// Windows SDL reports the change itself within milliseconds, so this never fires there.
 // ponytail: XInput slots only (Xbox pads, the Steam Input virtual pad); a pad Wine shows only as HID still needs a restart.
-void wine_pad_rescan(uint64_t ts) {
-    static const bool wine = nxrt::host_is_wine();
-    if (!wine || !g_gamepads) return;
+void pad_rescan(uint64_t ts) {
     static Uint64 next_ms = 0;
     static uint32_t last = ~0u;
     const Uint64 now = SDL_GetTicks();
@@ -228,13 +235,12 @@ void wine_pad_rescan(uint64_t ts) {
     next_ms = now + 1000;
     const uint32_t slots = xinput_slots();
     const bool changed = last != ~0u && slots != last;
-    if (changed) {
-        NXLOG_I(kTag, "XInput slots 0x%x -> 0x%x under Wine: rescanning gamepads", last, slots);
-        while (!g_pads.empty()) gamepad_closed(g_pads.back().id, ts);
-        SDL_QuitSubSystem(SDL_INIT_GAMEPAD | SDL_INIT_JOYSTICK);
-        if (!SDL_InitSubSystem(SDL_INIT_GAMEPAD | SDL_INIT_JOYSTICK)) NXLOG_W(kTag, "gamepad rescan failed: %s", SDL_GetError());
-    }
     last = slots;
+    if (!changed || !g_gamepads || now - g_last_pad_event_ms < 2000) return;
+    NXLOG_I(kTag, "XInput slots changed and SDL reported nothing: rescanning gamepads");
+    while (!g_pads.empty()) gamepad_closed(g_pads.back().id, ts);
+    SDL_QuitSubSystem(SDL_INIT_GAMEPAD | SDL_INIT_JOYSTICK);
+    if (!SDL_InitSubSystem(SDL_INIT_GAMEPAD | SDL_INIT_JOYSTICK)) NXLOG_W(kTag, "gamepad rescan failed: %s", SDL_GetError());
 }
 #endif
 
@@ -306,10 +312,12 @@ void translate(const SDL_Event& ev) {
         }
 
         case SDL_EVENT_GAMEPAD_ADDED:
+            g_last_pad_event_ms = SDL_GetTicks();
             gamepad_opened(ev.gdevice.which, ts);
             break;
 
         case SDL_EVENT_GAMEPAD_REMOVED:
+            g_last_pad_event_ms = SDL_GetTicks();
             gamepad_closed(ev.gdevice.which, ts);
             break;
 
@@ -377,6 +385,24 @@ void translate(const SDL_Event& ev) {
 
 bool init(const InitOptions& opt) {
     if (g_inited) return true;
+#if defined(__APPLE__)
+    // SDL loads libvulkan.1.dylib through dyld's search paths, not the executable's, so a window fails with "Failed to load
+    // Vulkan Portability library" although the runtime's own copy (vk_device.cpp: @executable_path/libvulkan.1.dylib) is
+    // right there. Point SDL at that file; a system-wide SDK or an explicit SDL_VULKAN_LIBRARY still wins.
+    if (!std::getenv("SDL_VULKAN_LIBRARY")) {
+        char exe[4096];
+        uint32_t n = sizeof exe;
+        if (::_NSGetExecutablePath(exe, &n) == 0) {
+            char real[4096];
+            const char* dir = ::realpath(exe, real) ? real : exe;
+            std::string lib(dir);
+            const size_t slash = lib.find_last_of('/');
+            lib.erase(slash == std::string::npos ? 0 : slash);
+            lib += "/libvulkan.1.dylib";
+            if (::access(lib.c_str(), R_OK) == 0) ::setenv("SDL_VULKAN_LIBRARY", lib.c_str(), 1);
+        }
+    }
+#endif
     // Hints must be set before SDL_Init. Raw, unaccelerated relative mouse; gamepads keep reporting when the window is
     // in the background.
     SDL_SetHint(SDL_HINT_MOUSE_RELATIVE_SYSTEM_SCALE, "0");
@@ -447,7 +473,13 @@ void* native_window() { return g_window; }
 
 void* native_hwnd() {
     if (!g_window) return nullptr;
+#if defined(_WIN32)
     return SDL_GetPointerProperty(SDL_GetWindowProperties(g_window), SDL_PROP_WINDOW_WIN32_HWND_POINTER, nullptr);
+#else
+    // The Metal view: what a CAMetalLayer is attached to. VK_EXT_metal_surface takes it, and it is the macOS answer to
+    // "the native window handle" that platform.h promises (a CAMetalLayer wraps the NSView SDL created).
+    return SDL_GetPointerProperty(SDL_GetWindowProperties(g_window), SDL_PROP_WINDOW_COCOA_WINDOW_POINTER, nullptr);
+#endif
 }
 
 void set_window_title(const char* title) {
@@ -621,7 +653,7 @@ bool relative_mouse_is_raw() {
 int pump_events(bool wait, int timeout_ms) {
     if (!g_inited) return 0;
 #ifdef _WIN32
-    wine_pad_rescan(SDL_GetTicksNS());
+    pad_rescan(SDL_GetTicksNS());
 #endif
     SDL_Event ev;
     int handled = 0;

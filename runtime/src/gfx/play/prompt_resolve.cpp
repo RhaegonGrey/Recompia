@@ -266,7 +266,9 @@ PromptStyle auto_style(LastDevice last, int last_pad_kind, int connected_pad_kin
     switch (last) {
         case LastDevice::KeyboardMouse: return PromptStyle::Keyboard;
         case LastDevice::Pad: return from_kind(last_pad_kind);
-        default: return connected_pad_kind >= 0 ? from_kind(connected_pad_kind) : PromptStyle::Keyboard;
+        // Nothing used yet: a pad that is merely connected does not decide. A controller paired to a desktop sat there unused and
+        // showed a keyboard player its Switch glyphs (the first pad press still switches to them, the first key press switches back).
+        default: return PromptStyle::Keyboard;
     }
 }
 

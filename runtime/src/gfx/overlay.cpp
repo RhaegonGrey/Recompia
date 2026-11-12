@@ -2,6 +2,8 @@
 // Dear ImGui overlay (declarations in include/nxrt/overlay.h). ImGui and its Vulkan backend are pinned in cmake/gfx_deps.cmake.
 #include "overlay_impl.h"
 
+#include "nxrt/notices.h"
+
 namespace nxrt::gfx {
 using namespace overlay_detail;
 namespace {
@@ -197,6 +199,7 @@ Overlay::~Overlay() {
     if (impl_->ctx.device) impl_->ctx.device->wait_idle();
     impl_->composite.shutdown();
     if (impl_->backend_ready) ImGui_ImplVulkan_Shutdown();
+    if (impl_->imgui) impl_->free_notice_textures();
     if (impl_->imgui) ImGui::DestroyContext(impl_->imgui);
     delete impl_;
 }
@@ -338,12 +341,16 @@ void Overlay::draw(const FrameInfo& f) {
     const double now_s = std::chrono::duration<double>(now.time_since_epoch()).count();
     const bool note_on = s.note_visible(now_s) && (s.counter_in_shots.load(std::memory_order_relaxed) || !s.ctx.renderer->capture_pending());
     const bool ptr_on = s.ptr_show.load(std::memory_order_relaxed) && (s.ptr_in_shots.load(std::memory_order_relaxed) || !s.ctx.renderer->capture_pending());
-    const bool quit_on = s.quit_open;
-    const bool kb_on = !quit_on && s.kb_poll();
+    const bool bare = s.ctx.renderer->capture_bare();   // a mod's screenshot: none of our menus, prompts or messages in it
+    const bool menu_vis = s.visible && !bare;
+    const bool quit_on = s.quit_open && !bare;
+    const bool kb_on = !s.quit_open && s.kb_poll() && !bare;
     const bool save_on = s.save_notice_visible(now_s);
-    const bool touch_on = s.touch_btn.load(std::memory_order_relaxed) && !kb_on && !quit_on;   // the corner button (menu closed: "Menu", open: "Close")
+    const bool notices_on = notices::any() && !s.ctx.renderer->capture_pending();   // mods' messages: never in a screenshot
+    const bool notice_tex_on = !s.notice_tex.empty();   // pictures of messages still held: frames go on until they are given back
+    const bool touch_on = s.touch_btn.load(std::memory_order_relaxed) && !kb_on && !quit_on && !bare;   // the corner button (menu closed: "Menu", open: "Close")
     const bool layer_on = s.layer_wanted();   // the game's layer (overlay_layer.cpp)
-    if (!s.visible && !counter_on && !note_on && !save_on && !ptr_on && !kb_on && !quit_on && !touch_on && !layer_on) {
+    if (!menu_vis && !counter_on && !note_on && !save_on && !notices_on && !notice_tex_on && !ptr_on && !kb_on && !quit_on && !touch_on && !layer_on) {
         s.last_frame = now;
         s.counter_was_on = false;
         return;
@@ -366,7 +373,7 @@ void Overlay::draw(const FrameInfo& f) {
     }
     // a screenshot leaves the counter out unless asked for; with the menu hidden there is then nothing to draw
     const bool show_counter = counter_on && (s.counter_in_shots.load(std::memory_order_relaxed) || !s.ctx.renderer->capture_pending());
-    if (!s.visible && !show_counter && !note_on && !save_on && !ptr_on && !kb_on && !quit_on && !touch_on && !layer_on) {
+    if (!menu_vis && !show_counter && !note_on && !save_on && !notices_on && !notice_tex_on && !ptr_on && !kb_on && !quit_on && !touch_on && !layer_on) {
         s.last_frame = now;
         return;
     }
@@ -386,15 +393,20 @@ void Overlay::draw(const FrameInfo& f) {
     s.update_scale(f.extent);
     ImGui_ImplVulkan_NewFrame();
     ImGui::NewFrame();
+    // the messages up now; during a screenshot none are read and their pictures are kept, otherwise every picture not among them goes
+    std::vector<notices::Notice> notice_list;
+    if (notices_on) notice_list = notices::shown(now_s);
+    s.retire_notice_textures(notices_on || !notices::any() ? &notice_list : nullptr);
     if (layer_on) s.draw_game_layer(f);   // the background list: under everything below
     // the keyboard and the quit prompt are modal: the menu (and a keyboard under the prompt) comes back once they are answered
-    if (s.visible && !kb_on && !quit_on) s.build_ui();
+    if (menu_vis && !kb_on && !quit_on) s.build_ui();
     if (kb_on) s.draw_keyboard(now_s);
     if (quit_on) s.draw_quit_prompt();
     if (touch_on) s.draw_touch_button(s.visible);
     if (show_counter) s.draw_counter(f, now_s);
     if (note_on) s.draw_note(f);
     if (save_on) s.draw_save_notice(f);
+    if (notices_on) s.draw_notices(f, notice_list);
     if (ptr_on) {   // a plain arrow, white with a dark outline, sized with the frame height
         const float k = std::max(1.f, static_cast<float>(f.extent.height) / 720.f);
         const float x = s.ptr_x.load(std::memory_order_relaxed), y = s.ptr_y.load(std::memory_order_relaxed);

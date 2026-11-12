@@ -106,8 +106,8 @@ export function parseInvite(input) {
  */
 export function inviteToUi(invite) {
   if (invite.kind === 'lan') return { view: 'lan', lanJoin: invite.addr };
-  if (invite.kind === 'relay') return { view: 'internet', role: 'visit', through: true, visitAddr: invite.relay, visitCode: invite.code, relay: invite.relay };
-  return { view: 'internet', role: 'visit', through: false, visitAddr: invite.addr, visitCode: invite.code };
+  if (invite.kind === 'relay') return { view: 'internet', server: 'own', role: 'visit', through: true, visitAddr: invite.relay, visitCode: invite.code, relay: invite.relay };
+  return { view: 'internet', server: 'own', role: 'visit', through: false, visitAddr: invite.addr, visitCode: invite.code };
 }
 
 /** What the page tells the player after an invite was applied. */

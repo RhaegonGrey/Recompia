@@ -20,6 +20,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -30,6 +31,7 @@
 #include "nxrt/host_device.h"
 #include "nxrt/input_source.h"
 #include "nxrt/log.h"
+#include "nxrt/notices.h"
 #include "nxrt/nvn.h"
 #include "nxrt/platform.h"
 #include "nxrt/services_api.h"
@@ -128,6 +130,20 @@ struct Overlay::Impl {
     double save_until_s = -1.0;
     bool save_notice_visible(double now_s);
     void draw_save_notice(const FrameInfo& f);
+    // The short messages of nxrt/notices.h (mods' notify): stacked at the bottom left, oldest on top, a message's picture left of its text.
+    // Left out of screenshots. Presenting thread only.
+    void draw_notices(const FrameInfo& f, const std::vector<notices::Notice>& list);   // mu held, inside an ImGui frame
+    // One ImGui user texture per shown picture, made the first time its message is drawn (the backend uploads it at that frame's render).
+    // Once the message is gone it is handed back (WantDestroyNextFrame); the backend destroys it when no frame in flight uses it any more,
+    // and then it is freed here. While any is held the overlay keeps drawing frames, so that happens within a few frames.
+    struct NoticeTex {
+        std::shared_ptr<const notices::Image> img;
+        ImTextureData* tex = nullptr;
+    };
+    std::vector<NoticeTex> notice_tex;
+    ImTextureData* notice_texture(const std::shared_ptr<const notices::Image>& img);   // mu held, inside an ImGui frame
+    void retire_notice_textures(const std::vector<notices::Notice>* live);   // mu held, after NewFrame; live null: keep every one this frame
+    void free_notice_textures();          // ~Overlay, after the backend's shutdown
 
     // The on-screen keyboard (services_api.h swkbdui). kb_mu guards the question and its text: key events edit it on the game's main thread,
     // the pad and the mouse in draw() on the presenting thread. Lock order: mu (ImGui), then kb_mu, then the swkbdui question's own lock.

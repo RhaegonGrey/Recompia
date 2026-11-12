@@ -22,7 +22,7 @@ export const api = {
   cancelUpdate: () => invoke('cancel_update'),
 
   // Opening links, files and folders
-  openReleaseUrl: (args) => invoke('open_release_url', args),   // { url }
+  openLink: (args) => invoke('open_link', args),   // { url }
   openGameFile: (args) => invoke('open_game_file', args),   // { name }
   openGameDir: () => invoke('open_game_dir'),
   openSaveDir: () => invoke('open_save_dir'),
@@ -46,7 +46,7 @@ export const api = {
   cancelNup: () => invoke('cancel_nup'),
 
   // Play and setup
-  play: () => invoke('play'),
+  play: (args) => invoke('play', args),   // { withoutMods } (optional: this one start runs without mods)
   gameStatus: () => invoke('game_status'),
   setupStatus: () => invoke('setup_status'),
   startSetup: (args) => invoke('start_setup', args),   // { gentle }
@@ -96,4 +96,19 @@ export const api = {
   linkProbe: (args) => invoke('link_probe', args),   // { addr } -> { kind: answered | refused | timed_out | bad_address, ms?, message? }
   setupFacts: () => invoke('setup_facts'),           // -> { firewalld: { state, zones, ports } }
   tailscalePeers: () => invoke('tailscale_peers'),   // -> { found, error?, self, peers: [{ name, dns_name, ips, online, hosting }] }
+
+  // Mods (Modtopia)
+  modsList: () => invoke('mods_list'),
+  modsSetEnabled: (args) => invoke('mods_set_enabled', args),   // { id, on, allow }
+  modsMove: (args) => invoke('mods_move', args),   // { id, delta }
+  modsSetSetting: (args) => invoke('mods_set_setting', args),   // { id, key, number | text }
+  modsRemove: (args) => invoke('mods_remove', args),   // { id }
+  modsCatalog: (args) => invoke('mods_catalog', args),   // { refresh }
+  modsInstall: (args) => invoke('mods_install', args),   // { id }
+  modsAutoUpdate: () => invoke('mods_auto_update'),   // [{ name, from, to }] updated, once per session, only with the launcher preference on
+  modsKeepLocked: () => invoke('mods_keep_locked'),   // ['install' | 'switch_on' | 'share_on'] done, once at launcher start
+  modsSetLock: (args) => invoke('mods_set_lock', args),   // { what: 'mod' | 'sharing', locked }
+  openModsDir: () => invoke('open_mods_dir'),
+  // Achievements (the community tracker)
+  achievementsView: (args) => invoke('achievements_view', args),   // { refresh }
 };

@@ -119,11 +119,8 @@ void set_probe_layout(const ProbeLayout& l);
 void set_clock_rate(double hz);
 
 // ---- plumbing --------------------------------------------------------------------------------------------------------------------------
-// Screenshot provider: the graphics layer registers a function that writes the last presented frame as PNG (return false on failure).
-using ScreenshotFn = bool (*)(const char* png_path, void* user);
-void set_screenshot_provider(ScreenshotFn fn, void* user);
-// Called at the end of a run, before the process exits: waits until the screenshots the provider still writes in the background are on
-// disk (the graphics layer registers it; none: nothing to wait for).
+// Screenshots (@shot) go through nxrt/screenshot.h. Called at the end of a run, before the process exits: waits until the screenshots the
+// provider still writes in the background are on disk (the graphics layer registers it; none: nothing to wait for).
 void set_screenshot_flush(void (*fn)());
 // Where a replayed / scripted mouse impulse goes (the PC-input layer registers input::mouse_delta_add here; counts per frame).
 using MouseSinkFn = void (*)(double dx, double dy);

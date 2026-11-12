@@ -26,6 +26,8 @@
 #include <utility>
 #include <vector>
 
+#include "nvn_thread.h"
+
 namespace nxrt::nvn::be {
 
 // ---- hashing ----------------------------------------------------------------------------------------------------
@@ -313,7 +315,7 @@ public:
 private:
     void rescan_worker(int interval_ms);                               // own thread, from open()
     std::atomic<uint64_t> generation_{0};
-    std::thread rescan_thread_;
+    BigThread rescan_thread_;
     std::mutex rescan_mu_;
     std::condition_variable rescan_cv_;
     bool rescan_stop_ = false;                                         // rescan_mu_
@@ -354,7 +356,7 @@ private:
     uint64_t pack_data_end_ = 0;
     std::unordered_map<std::string, PackEntry> pack_;                  // the usable entries; set in open(), then read-only
     std::atomic<bool> pack_stop_{false};
-    std::thread pack_prefetch_thread_, pack_build_thread_;
+    BigThread pack_prefetch_thread_, pack_build_thread_;
     std::atomic<int> pre_live_{0};                                     // preload workers still running
     std::atomic<uint64_t> pre_from_pack_{0}, pre_from_files_{0};       // .spv reads served by the pack / by separate files
     uint64_t pre_start_ms_ = 0;
@@ -388,7 +390,7 @@ private:
     std::vector<std::string> pre_list_;                                     // the order file of the last run
     size_t pre_next_ = 0;                                                   // next pre_list_ entry for a worker (pre_mu_)
     bool pre_stop_ = false;
-    std::vector<std::thread> pre_threads_;
+    std::vector<BigThread> pre_threads_;
     std::string order_path_;
     std::unordered_set<std::string> order_known_;                           // in the order file (lock_)
     std::string order_pending_;                                             // new lines not yet appended (lock_)

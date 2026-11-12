@@ -25,6 +25,7 @@
 #include "nvn_gpu_internal.h"
 #include "nvn_pool_copy_impl.h"
 #include "nvn_pool_track.h"
+#include "nvn_thread.h"   // BigThread: 512 KiB is the macOS default stack, and the landing runs guarded_copy
 
 namespace nxrt::nvn::be::gpu {
 namespace {
@@ -54,7 +55,7 @@ thread_local bool t_landing = false;            // a landing on this thread (a n
 // the landing thread
 std::mutex g_th_mu;
 std::condition_variable g_th_cv;
-std::thread g_th;
+BigThread g_th;
 bool g_th_stop = false;
 
 void land_min_update() { g_land_min.store(g_land.empty() ? kNone : g_land.front().serial, std::memory_order_release); }
@@ -167,7 +168,7 @@ void land_start() {
     std::lock_guard<std::mutex> lk(g_th_mu);
     if (g_th.joinable()) return;
     g_th_stop = false;
-    g_th = std::thread(land_loop);
+    g_th.start("nvn-pool-land", 16, land_loop);   // the same stack the render thread gets (nvn_thread.h)
 }
 
 void land_stop() {

@@ -49,7 +49,7 @@ assert.equal(r.rows[0].addr, '100.64.0.7:47600');
 
 // joinUi
 const row = friendRows({ found: true, peers: [peer('amy', '100.64.0.3', true, true)] }).rows[0];
-assert.deepEqual(joinUi(row), { view: 'internet', role: 'visit', through: false, visitAddr: '100.64.0.3:47600', visitCode: '' });
+assert.deepEqual(joinUi(row), { view: 'internet', server: 'own', role: 'visit', through: false, visitAddr: '100.64.0.3:47600', visitCode: '' });
 assert.equal(joinNote(row), 'Now paste the invite from amy (or type their room code) to finish.');
 assert.equal(editsFor({ ...uiFrom({}, {}), ...joinUi(row) }, ''), null, 'the page waits for the room code');
 

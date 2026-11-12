@@ -17,7 +17,7 @@ export function createUpdateActions(h) {
         h.draw();
       },
       update: () => store.installUpdate(),
-      'open-url': (url) => api.openReleaseUrl({ url }),
+      'open-url': (url) => api.openLink({ url }),
       async 'builds-open'() {
         await h.flush();
         await chooseBuild(st.src.config.channel === 'testing' ? 'testing' : 'stable', false);

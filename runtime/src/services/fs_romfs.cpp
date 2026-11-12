@@ -38,6 +38,8 @@ constexpr size_t kMaxName = 255;            // bytes of UTF-8 in one name
 constexpr size_t kMaxPath = 0x300;          // SDK FS_MAX_PATH (0x301 with the terminator); the path counts its leading '/'
 constexpr size_t kOpenFiles = 16;           // host files kept open by the cache
 constexpr size_t kLongPath = 240;           // host paths this long or longer get the \\?\ prefix
+constexpr int kLayerGame = -2;              // Node::layer of the update's own files (build's host_dir)
+constexpr int kLayerBase = -1;              // ... of the base game's (build's base_dir); 0 and up: a mod folder
 
 uint64_t align_up(uint64_t v, uint64_t a) { return (v + a - 1) / a * a; }
 uint64_t pad4(size_t n) { return align_up(n, 4); }
@@ -89,10 +91,15 @@ bool to_wide(const std::string& s, std::wstring& out) {
 
 // Host paths that may exceed MAX_PATH get the extended-length prefix. The input must already use backslashes.
 std::wstring long_path(std::wstring p) {
+#if defined(_WIN32)
     std::replace(p.begin(), p.end(), L'/', L'\\');
     if (p.size() < kLongPath || p.compare(0, 4, L"\\\\?\\") == 0) return p;
     if (p.compare(0, 2, L"\\\\") == 0) return L"\\\\?\\UNC\\" + p.substr(2);
     return L"\\\\?\\" + p;
+#else
+    // POSIX has no MAX_PATH and no extended-length prefix; '\' is an ordinary character there, so the path is used as is.
+    return p;
+#endif
 }
 
 // One folder or file of the host tree. Layout fields are filled in once the tree is complete.
@@ -110,8 +117,8 @@ struct Node {
     uint32_t first_child = kNone;  // directories: first subdirectory entry
     uint32_t first_file = kNone;   // directories: first file entry
     uint64_t data = 0;           // files: offset of the data from the partition start
-    bool from_base = false;      // served from the base layer (make_layout's base_dir)
-    bool from_mod = false;       // served from the mod layer (make_layout's mod_dir)
+    int layer = kLayerGame;      // the layer it is served from: kLayerGame, kLayerBase, or the index of its mod folder (make_layout's mod_dirs)
+    bool over_game = false;      // a mod's file: a file of the update or base game stands under it (it replaces one)
 };
 
 std::string shown(const Node& n) { return n.path.empty() ? std::string("/") : n.path; }
@@ -286,57 +293,38 @@ bool scan_root(const std::string& host_dir, Node& root, std::string* err) {
     return true;
 }
 
-void mark_base(Node& n) {
-    n.from_base = true;
-    for (Node& k : n.kids) mark_base(k);
-}
-
-void mark_mod(Node& n) {
-    n.from_mod = true;
-    for (Node& k : n.kids) mark_mod(k);
+void mark_layer(Node& n, int layer) {
+    n.layer = layer;
+    for (Node& k : n.kids) mark_layer(k, layer);
 }
 
 // Puts every entry of `base` that `top` lacks under `top` (the files of `top` win; a folder in both is merged). False with msg set when one
-// layer has a file where the other has a folder: such a pair cannot be layered. `replaced` (optional) counts the files of `top` that replace one of `base`.
-bool overlay(Node& top, Node&& base, std::string& msg, uint32_t* replaced = nullptr) {
+// layer has a file where the other has a folder: such a pair cannot be layered. A file of `top` over a game file (or over a mod's file that
+// replaces one) is marked over_game.
+bool overlay(Node& top, Node&& base, std::string& msg) {
     for (Node& b : base.kids) {
         auto it = std::find_if(top.kids.begin(), top.kids.end(), [&](const Node& k) { return k.name == b.name; });
         if (it == top.kids.end()) {
-            mark_base(b);
             top.kids.push_back(std::move(b));
         } else if (it->is_dir != b.is_dir) {
             msg = "two RomFS layers disagree on " + b.path + " (a file in one, a folder in the other)";
             return false;
         } else if (it->is_dir) {
-            if (!overlay(*it, std::move(b), msg, replaced)) return false;
-        } else if (replaced) {
-            ++*replaced;   // a file of `top` stands where `base` has one
+            if (!overlay(*it, std::move(b), msg)) return false;
+        } else {
+            it->over_game = it->over_game || b.layer < 0 || b.over_game;   // a file of `top` stands where `base` has one
         }
     }
     std::sort(top.kids.begin(), top.kids.end(), [](const Node& a, const Node& b) { return a.name < b.name; });
     return true;
 }
 
-// Lays out the host folder with the optional mod above it and base below it: entries sorted by full path in each table, file data in that
-// order, 16-byte aligned.
-bool make_layout(const std::string& host_dir, const std::string& base_dir, const std::string& mod_dir, Layout& L, std::string* err) {
+// Lays out the host folder with the optional base below it and the mod folders above it (index 0 on top): entries sorted by full path in
+// each table, file data in that order, 16-byte aligned.
+bool make_layout(const std::string& host_dir, const std::string& base_dir, const std::vector<std::string>& mod_dirs, Layout& L,
+                 std::string* err) {
     Node root;
-    uint32_t mod_replaced = 0;
     if (!scan_root(host_dir, root, err)) return false;
-    if (!mod_dir.empty()) {
-        Node mod;
-        std::string e;
-        if (!scan_root(mod_dir, mod, &e)) {
-            if (err) *err = "mod RomFS: " + e;
-            return false;
-        }
-        mark_mod(mod);
-        if (!overlay(mod, std::move(root), e, &mod_replaced)) {
-            if (err) *err = e;
-            return false;
-        }
-        root = std::move(mod);
-    }
     if (!base_dir.empty()) {
         Node base;
         std::string e;
@@ -344,11 +332,27 @@ bool make_layout(const std::string& host_dir, const std::string& base_dir, const
             if (err) *err = "base game RomFS: " + e;
             return false;
         }
+        mark_layer(base, kLayerBase);
         if (!overlay(root, std::move(base), e)) {
             if (err) *err = e;
             return false;
         }
     }
+    for (size_t i = mod_dirs.size(); i-- > 0;) {   // the lowest mod folder first: each one goes over everything below it
+        Node mod;
+        std::string e;
+        if (!scan_root(mod_dirs[i], mod, &e)) {
+            if (err) *err = "mod RomFS: " + e;
+            return false;
+        }
+        mark_layer(mod, static_cast<int>(i));
+        if (!overlay(mod, std::move(root), e)) {
+            if (err) *err = e;
+            return false;
+        }
+        root = std::move(mod);
+    }
+    root.layer = kLayerGame;   // the root folder belongs to no layer (a mod folder's root was moved into it)
 
     std::vector<Node*> dirs{&root}, files;
     flatten(root, dirs, files);
@@ -460,10 +464,13 @@ bool make_layout(const std::string& host_dir, const std::string& base_dir, const
     uint64_t cursor = kPartitionOfs;
     uint64_t data_bytes = 0;
     uint32_t base_files = 0;
-    uint32_t mod_files = 0;
+    std::vector<RomfsImage::ModStats> mod_stats(mod_dirs.size());
     for (Node* f : files) {
-        if (f->from_base) base_files++;
-        if (f->from_mod) mod_files++;
+        if (f->layer == kLayerBase) base_files++;
+        if (f->layer >= 0) {
+            mod_stats[static_cast<size_t>(f->layer)].files++;
+            if (f->over_game) mod_stats[static_cast<size_t>(f->layer)].replaced++;
+        }
         const uint64_t img = kPartitionOfs + f->data;
         if (img > cursor) L.segs.push_back({cursor, img - cursor, Segment::Kind::kZero, 0, 0});
         const uint32_t idx = static_cast<uint32_t>(L.files.size());
@@ -482,8 +489,7 @@ bool make_layout(const std::string& host_dir, const std::string& base_dir, const
     L.stats.data_bytes = data_bytes;
     L.stats.data_offset = kPartitionOfs;
     L.stats.base_files = base_files;
-    L.stats.mod_files = mod_files;
-    L.stats.mod_replaced = mod_replaced;
+    L.stats.mods = std::move(mod_stats);
     L.built = true;
     return true;
 }
@@ -573,9 +579,9 @@ struct RomfsImage::Impl {
 RomfsImage::RomfsImage() : p_(std::make_unique<Impl>()) {}
 RomfsImage::~RomfsImage() = default;
 
-bool RomfsImage::build(const std::string& host_dir, std::string* err, const std::string& base_dir, const std::string& mod_dir) {
+bool RomfsImage::build(const std::string& host_dir, std::string* err, const std::string& base_dir, const std::vector<std::string>& mod_dirs) {
     Layout fresh;
-    const bool ok = make_layout(host_dir, base_dir, mod_dir, fresh, err);
+    const bool ok = make_layout(host_dir, base_dir, mod_dirs, fresh, err);
     std::lock_guard<std::mutex> lk(p_->mu);
     p_->cache.clear();
     p_->l = ok ? std::move(fresh) : Layout{};

@@ -1,0 +1,65 @@
+# Builds the macOS port on Apple Silicon and runs the headless graphics smoke test (docs/macos-port.md M6).
+# The game itself needs a dump and is not part of this: the demo (apps/gfx_demo.cpp) renders its own scene through the same
+# NVN/Vulkan back end on MoltenVK, so it proves the build, the runtime, the address-space layout and the graphics path.
+# Pushes to main and manual runs only (the repo owner's call, PROJECT.md 6.2): a macOS job on every pull request is not worth it.
+name: macOS
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'runtime/**'
+      - 'recomp/**'
+      - 'game-build/**'
+      - 'launcher/**'
+      - '.github/workflows/macos.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    # arm64: macos-14 was x64 and its image was retired on 2 November 2026. macos-latest is the macOS 26 arm64 image,
+    # macos-15 the 15 arm64 image; both are standard runners of a public repository.
+    runs-on: macos-latest
+    timeout-minutes: 60
+    env:
+      HOMEBREW_NO_AUTO_UPDATE: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Packages
+        run: |
+          brew install molten-vk          # cmake and ninja come with the image
+          echo "NXRT_MOLTENVK_DIR=$(brew --prefix molten-vk)/lib" >> "$GITHUB_ENV"
+
+      - name: Configure
+        run: cd runtime && cmake --preset macos-arm64
+
+      - name: Build
+        run: cd runtime && cmake --build --preset macos-arm64 -j 4
+
+      - name: Graphics smoke test (headless, MoltenVK)
+        run: |
+          cd runtime
+          ./build/macos-arm64/nxrt_gfx_demo --headless --frames 30 --screenshot /tmp/demo.png --shot-frame 29
+          test -s /tmp/demo.png
+
+      - name: Address-space self test
+        run: ./runtime/build/macos-arm64/nxrt_gfx_demo --selftest
+
+      - name: Launcher (front end + Rust)
+        run: |
+          cd launcher
+          npm ci
+          npm run build
+          cd src-tauri && cargo check
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pkp-macos-arm64
+          path: |
+            runtime/build/macos-arm64/nxrt_gfx_demo
+            /tmp/demo.png
+          if-no-files-found: error

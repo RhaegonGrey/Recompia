@@ -595,6 +595,16 @@ uint32_t wait_synchronization(const uint32_t* handles, int32_t count, int64_t ti
             rem = until - now_ns();
             if (rem <= 0) return kTimedOut;
         }
+        if (count == 1) {
+            NXLOG_D("svc", "wait: thread %llu blocks on handle 0x%x (timeout %lld ns)", static_cast<unsigned long long>(me.id),
+                    handles[0], static_cast<long long>(timeout_ns));
+        } else {
+            char b[192] = {};
+            int n = std::snprintf(b, sizeof b, "wait: thread %llu blocks on handles", static_cast<unsigned long long>(me.id));
+            for (int k = 0; k < count && n > 0 && n < static_cast<int>(sizeof b); ++k)
+                n += std::snprintf(b + n, sizeof b - static_cast<size_t>(n), " 0x%x", handles[k]);
+            NXLOG_D("svc", "%s (timeout %lld ns)", b, static_cast<long long>(timeout_ns));
+        }
         sleep_rem_locked(k, me, rem);
         if (!k.held()) k.lock();
     }

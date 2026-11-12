@@ -61,4 +61,37 @@ inline size_t utf8_cut(const std::string& s, size_t n) {
     return n;
 }
 
+// UTF-8 to UTF-16 (Windows' wide calls; wchar_t is 16 bits there). A byte that does not start a valid, shortest-form sequence becomes U+FFFD
+// and decoding goes on at the next byte.
+inline std::wstring widen(std::string_view s) {
+    static constexpr uint32_t kMin[5] = {0, 0, 0x80, 0x800, 0x10000};   // the smallest code point of each length (no overlong forms)
+    std::wstring out;
+    out.reserve(s.size());
+    for (size_t i = 0; i < s.size();) {
+        const uint8_t c = static_cast<uint8_t>(s[i]);
+        const size_t n = c < 0x80 ? 1 : (c & 0xE0) == 0xC0 ? 2 : (c & 0xF0) == 0xE0 ? 3 : (c & 0xF8) == 0xF0 ? 4 : 0;
+        uint32_t cp = n == 1 ? c : n == 2 ? (c & 0x1Fu) : n == 3 ? (c & 0x0Fu) : (c & 0x07u);
+        bool ok = n != 0 && i + n <= s.size();
+        for (size_t k = 1; ok && k < n; ++k) {
+            const uint8_t d = static_cast<uint8_t>(s[i + k]);
+            ok = (d & 0xC0) == 0x80;
+            cp = (cp << 6) | (d & 0x3Fu);
+        }
+        if (!ok || cp < kMin[n] || cp > 0x10FFFF || (cp >= 0xD800 && cp <= 0xDFFF)) {
+            out += static_cast<wchar_t>(0xFFFD);
+            ++i;
+            continue;
+        }
+        if (cp >= 0x10000) {
+            cp -= 0x10000;
+            out += static_cast<wchar_t>(0xD800 + (cp >> 10));
+            out += static_cast<wchar_t>(0xDC00 + (cp & 0x3FF));
+        } else {
+            out += static_cast<wchar_t>(cp);
+        }
+        i += n;
+    }
+    return out;
+}
+
 }  // namespace nxrt::text

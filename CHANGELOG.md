@@ -164,6 +164,73 @@ This Testing build adds logging and a few device checks, and changes no frame-ra
   - Now: View and Menu show the same symbols as on a Steam Deck, and each rear grip has its own icon: **L4**, **L5**, **R4** and **R5**
   - Still not: it needs the new `prompt_icons.pak` that comes with the build; the Steam button, the quick-access (...) button and the trigger clicks have no prompt icon yet
 
+- New **Item editor (experimental)** in Settings > Gameplay, off by default: it adds an **Items** tab to the game's Settings screen where you change how many of an item in your bag you hold (up to the game's stack limit). It does not add new items and is off during Link Play. Back up your save first. Update only: no shader rebuild, no Set up again
+- New **Aspect Ratio** setting in the game's Settings > Display and in the launcher (Auto, 16:9, 16:10, 21:9, 32:9; applies after a restart): 16:9 now keeps the game in 16:9 on a 16:10 or ultrawide screen. The toggle that only chose black bars over stretching is now called **Letterbox** (#564). Update only: no shader rebuild, no Set up again
+- Fixed the **Nearest**, **FSR 1** and **NIS** upscalers with **Scene Resolution** below 100% doing nothing, the 3D scene staying as blurry as Off: they now act on the game's own stretch of the scene, so Nearest shows hard pixels and FSR 1 / NIS a sharper picture while the menus and HUD stay sharp (#571). Update only: no shader rebuild, no Set up again
+- Fixed **Set up** failing every time at "Linking pkp.exe" (`undefined symbol`) after a power cut or a forced shutdown during an earlier Set up: the cut could keep a compiled file's name and size but not its contents, and every later Set up took it as finished. Set up now writes each file to the disk before it counts it as done, and compiles again any compiled file it finds damaged, so the next Set up finishes. Update only: no shader rebuild, no Set up again
+- Fixed **Set up** on Linux stopping with "extract_corpus.py was not found": the launcher looked for the shader extractor in `tools/` while the Linux package ships it in `tools/shaders/`. Update only: no shader rebuild, no Set up again
+
+### Mods
+- Added a **Mods** tab to the game's own Settings: pick a mod, switch it on or off (applies at the next start), see its state and change its settings, which reach the mod at once
+- Mods can now take screenshots (without the game's overlay menus in them) and react to keyboard keys
+- Mods can tint the final picture (colour presets, colorblind filters), show a picture beside their messages, and make HTTPS requests to the sites their own description names (no redirects, cookies or sign-in)
+- Added **Start without mods** (in the notice after the game stopped unexpectedly, and in Settings > About > Troubleshooting) for one start with every mod left out; the game's Mods tab now shows what each mod holds, whether it changes gameplay, the sites it talks to, its checksum and a switch waiting for the next start; a data mod that replaces a shader file says so; and `pkp.log` lists every mod at start
+- Changing mods that need other hook points now translates only the game part they touch: a plan with main-only points no longer redoes the other three parts (on PC: about 4.5 minutes for main-only points, under a minute for points outside main)
+- Mods can hide the game's HUD, menus and markers while the 3D picture stays (Hide HUD, Photo Mode)
+- **Community Achievements** is now on by default and locked: the launcher installs it from the mod hub (when the game is set up and the hub can be reached) with sharing on, and keeps both on. **Unlock** (Mods page or Achievements page) explains what switching it off costs (your achievements and stats are no longer recorded; without sharing they are not counted in the community stats) before it lets you switch it off or remove it; **Lock** turns it back on. Once unlocked and removed, it stays removed. The game's Mods tab shows the locked switch and setting read only. Update only: no shader rebuild, no Set up again
+- The launcher's **Mods** page now has **Browse** on, with the Modtopia mod hub's list: filter by group, open **Details** (the whole description, the settings a mod adds, game versions, download size and links), see which mods are **Tested** on this game version, and install or update one with a single question. **Update mods by themselves** (off unless you switch it on) is on the Installed tab too. The mods folder gets a short README.txt
+
+### Launcher
+- Alpha builds (in-house tests, shared by link) are no longer listed or offered on any channel
+- New **Achievements** page: the Modtopia community tracker in the launcher, with the achievements grouped as the hub lists them, how many players have each one, the rarest right now, and which ones you earned (from the Community Achievements mod). It also shows whether the mod is installed, on and sharing, and can switch it or its sharing on. The launcher only reads the counts and sends nothing. Update only: no shader rebuild, no Set up again
+
+### Linux
+- The game runs natively on Linux: no Proton, no Wine. The download is `PokopiaRecomp-<version>-linux-x64.tar.gz`, with the launcher as an AppImage and the runtime as `libpkp_rt.so`, the same runtime the Windows build links as `pkp_rt.dll`
+- The runtime reaches the system directly instead of through the Windows API: `runtime/src/os/` holds a POSIX layer for files, memory mappings, sockets, threads, timers, paths and processes, and SDL3 plays the audio and opens the window. `pkp` is linked from the player's own dump with the bundled Zig, as on Windows
+- `libpkp_rt.so` needs glibc 2.35 or newer (Ubuntu 22.04+, Debian 12+, Fedora 36+, SteamOS 3) and nothing else: SDL3 is linked in, and every other backend library is opened at run time, so a missing one switches that backend off instead of failing the start
+- The defaults that fix a Linux kernel or Mesa behaviour now ask the kernel, not Wine: a kernel submission's pool walk, the lazy and shadow pool imports, the submit thread and its batching, the short sleep's timed address wait, the graphics pipeline library upgrade, the loop guard and the pipeline cache save all apply to the native build, which is what the Proton build had
+- Write tracking arms a whole range with one `mprotect` instead of one per 4 KiB page (a 10 MiB arm measured 3132 us -> 34 us), and the timed address wait is a futex, so the game's ~100 us GPU-fence polls no longer keep two cores busy
+- The game's main thread gets the 128 MiB stack it has on Windows: the native build ran it on the system's 8 MiB (SteamOS and most desktops), which a deeply nested part of the game can overflow and crash on
+- Steam Deck: add the AppImage as a non-Steam game. An AppImage leaves the graphics stack to the host on purpose, so it needs `libEGL`, `libGL`, `libGLESv2` and `libvulkan`, which every desktop and SteamOS ship
+- Mods reach the internet as they do on Windows: the host HTTP client loads the system's libcurl at the first request (every desktop distribution ships it, and macOS keeps it in the dyld shared cache), so an HTTPS request to a site the mod's description names is answered. The rules are the Windows ones: https anywhere, plain http only to localhost, no redirect, cookie or sign-in, TLS 1.2 or later, a 256 KiB answer cap and a time limit per step. Nothing links libcurl, so a host without it refuses the request (`MT_ERR_STATE` to the mod) instead of failing the start
+- Still not: **FSR 3 and DLSS**. Both are Windows-only SDKs and the native build turns them off, where the Proton build had them; FSR 1 and NIS are plain compute shaders and still run. Also Link Play against a peer and a real gamepad
+
+### macOS
+- The game runs natively on Apple silicon: `libpkp_rt.dylib`, a `pkp` linked from the player's own dump, Metal through MoltenVK, CoreAudio for sound and SDL3 for the window
+- The download is one zip, `Recompia-<version>-macos-arm64.zip`, whose root is `PokopiaRecomp-<version>/`: `PokopiaLauncher`, `tools/` and `libpkp_rt.dylib`. There is no `.app` and no signature: unpack it anywhere, start `PokopiaLauncher`, allow it once in **System Settings > Privacy and Security**, and it updates itself in place from then on
+- Vsync is on by default: without it MoltenVK presents immediately, frames show mid-refresh, and a MacBook flashes partly drawn pictures
+- `pkp` carries its own Metal shader-cache identity (an `Info.plist` linked into it, one per game folder). Without one it shared a cache folder with every other program outside an app bundle, and a start compiled every pipeline again whenever one of those was running
+- A frame limit holds through loading screens too, the game's own thread synchronisation is ordered the way Apple's cores need it (`LDAR`/`STLR`), SHA-1 uses the ARMv8 instructions, and the runtime's write tracking follows the host's 16 KiB pages, so a texture the game rewrites is not read back stale
+- The guest address space is reserved in `pkp`'s Mach-O header as a zero-fill `__GUEST` segment: libmalloc's xzone allocator takes about 24 GiB of it at random addresses before `main` runs
+- Mods reach the internet here too: the host HTTP client is the same libcurl one the Linux build uses, and macOS keeps libcurl in the dyld shared cache, so nothing is bundled for it
+- Still not: the two in-game movies (they are VP9 in WebM and no run has reached one yet), Link Play against a peer, and a signed and notarized `.app` — the zip is unsigned and its note covers the one-time **Open Anyway**. In the world the GPU is the limit: about 25 fps on an M3 at 1080p internal
+
+### Docs
+- `docs/linux-port.md` and `docs/macos-port.md` describe both ports, and `docs/macos-optimisations.md` records what is tuned, what is not, and how to measure it
+
+## 0.11.1 (build O: Ocelot Hotfix a1)
+
+**Update:** press **Update**, then **Set up again** once (the game code is translated again for the mods' hook points, several minutes). Your shaders and saves are kept; no shader is translated again.
+
+### Highlights
+- Fixed internet Link Play: 0.11.0 sent hosts and visitors to an old address of the official relay, so no room could be opened or joined
+- Added **Modtopia mods**: Recompia now runs mods made for Modtopia, the mod loader shared with Pokopia Native
+
+### Link Play
+- Fixed the **Internet** choice reaching the official relay: the launcher now uses the relay's permanent address (the game log said "the relay does not answer")
+  - Still on 0.11.0? Type `204.216.111.91:47610` under Link Play > Advanced > Use my own relay or address
+
+### Mods
+- Added Modtopia mods: the same `.pkmod` files work in Recompia and Pokopia Native
+- Added a **Mods** page in the launcher: switch your mods on and off, change their order and settings, and remove them. Put mods into the mods folder to install them
+- Added a permission step: a mod's code runs only after you allow it on the Mods page; a new or changed mod asks again. Mods with only files need no permission
+- Added a **Set up again** prompt when your mods need new hook points (a few minutes; shaders and saves are kept)
+- Link Play: everyone in a session needs the same gameplay mods; the Link Play page lists the ones you have on
+
+### Launcher
+- Faster **Set up again** after an update: only the parts of the game code that changed compile again (one new hook point: 231 ⇒ 9 of 231 parts); the rest come from the compile cache
+  - When an update only changes the runtime, Play says it is a quick relink (about a minute) instead of a 7-minute rebuild
+  - The first rebuild after this version still compiles everything once, to fill the cache
 
 ## 0.11.0 (build O: Ocelot)
 

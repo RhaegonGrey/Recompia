@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Upscaler hooks of the replay: temporal upscaling (camera block, jitter, the tone-map draw) and the scene upscaler override.
+// Upscaler hooks of the replay: temporal upscaling (camera block, jitter, the tone-map draw), SMAA at the tone map and the scene upscaler at the
+// game's scene stretch draw.
 #include "nvn_replay_internal.h"
 #include "extras/smaa_scene.h"
 
@@ -32,8 +33,9 @@ bool tsr_jitter(uint32_t* words, size_t n_words) {
     return extras::temporal_jitter_block(words, n_words, w, h, g_tsr_frame);
 }
 
-// Scene upscaler (S14, src/gfx/extras/hdr_nvn.h): before a tone-map draw whose HDR scene input is smaller than its target, FSR 1 enlarges the scene
-// to the target's size and the draw samples that instead. The override lives until the next draw.
+// Scene upscaler (S14, #571, src/gfx/extras/hdr_nvn.h): before the game's scene stretch draw, FSR 1 / NIS enlarge the scene part of its
+// input to the target's size and the draw samples that instead, or Nearest gives the input the nearest sampler (scene_stretch_for_draw).
+// The override lives until the next draw.
 // Temporal upscaling (FSR 3 / DLSS / DLAA, src/gfx/extras/temporal.h): a G-buffer draw (the game's count of colour targets and a depth target)
 // offers its binding of the game's camera block; the first valid one of the frame is kept with its depth target. Called only while
 // extras::temporal_wanted(), so the game names a block and g_tsr holds it.
@@ -50,8 +52,8 @@ void temporal_gbuffer_note() {
 }
 
 // The game's scene covers only part of its targets (extras::scene_fraction, Pokopia's [upscale] scene_scale, #116): the part of a scene
-// image of size `scene` that holds it, and the size of the image the tone-map draw then needs, out / fraction, so that its own lookup at
-// uv * fraction lands on the upscaled result in that image's top-left out-sized corner. False: the whole image is the scene.
+// image of size `scene` that holds it, and the size of the image the draw that reads it then needs, out / fraction, so that its own lookup
+// at uv * fraction lands on the upscaled result in that image's top-left out-sized corner. False: the whole image is the scene.
 static bool scene_part(VkExtent2D scene, VkExtent2D out, VkExtent2D* part, VkExtent2D* out_tex) {
     float fx = 1.0f, fy = 1.0f;
     extras::scene_fraction(&fx, &fy);
@@ -64,8 +66,8 @@ static bool scene_part(VkExtent2D scene, VkExtent2D out, VkExtent2D* part, VkExt
     static bool told = false;
     if (!told) {
         told = true;
-        NXLOG_I(kTag, "scene upscale: the scene covers %ux%u of its %ux%u target (fraction %.3f x %.3f): %ux%u -> %ux%u, handed to the tone-map draw "
-                "in a %ux%u image", part->width, part->height, scene.width, scene.height, fx, fy, part->width, part->height, out.width, out.height,
+        NXLOG_I(kTag, "scene upscale: the scene covers %ux%u of its %ux%u target (fraction %.3f x %.3f): %ux%u -> %ux%u, handed to the draw in a "
+                "%ux%u image", part->width, part->height, scene.width, scene.height, fx, fy, part->width, part->height, out.width, out.height,
                 out_tex->width, out_tex->height);
     }
     return true;
@@ -137,48 +139,6 @@ static void temporal_for_draw(const ProgLayout& pl) {
     }
 }
 
-// Nearest (#232): no pass, the tone-map draw samples the reduced scene with the nearest sampler (clamp to edge). With the scene in the
-// top-left part of full-size targets (scene_part: [upscale] scene_scale) every full-size colour input of the draw holds a part of scene
-// size (the scene and the post images made at its size), so each of them is sampled nearest; a full-size input read whole is read 1:1,
-// where nearest and bilinear give the same texels, and smaller inputs (bloom) stay filtered. Without a scene part the largest input
-// below the target size is the scene. The first input alone was not always the scene: the stretch stayed bilinear.
-static void nearest_scene_for_draw(const ProgLayout& pl, VkExtent3D te) {
-    float fx = 1.0f, fy = 1.0f;
-    extras::scene_fraction(&fx, &fy);
-    const bool part = fx < 1.0f || fy < 1.0f;
-    Texture* best = nullptr;
-    uint64_t best_area = 0;
-    auto add = [](Texture* t) {
-        if (!g_su.nearest(t) && g_su.near_n < kSuNearMax) g_su.near[g_su.near_n++] = t;
-    };
-    for (const BindingDesc& d : pl.bindings) {
-        if (d.type != VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER) continue;
-        const DescriptorBinding& b = d.shader->refl.bindings[d.index];
-        if (b.nvn.source != NvnSource::SamplerBinding && b.nvn.source != NvnSource::HandleInUniform) continue;
-        if (view_type_for(b) != VK_IMAGE_VIEW_TYPE_2D || b.image.depth) continue;
-        TexResolved r = resolve_texture(d);
-        if (!r.tex || !tex_gpu(r.tex) || tex_is_depth(r.tex) || shares_image(r.tex, S.depth_tex.get())) continue;
-        const VkExtent3D se = tex_image_extent(r.tex, 0);
-        const bool full = se.width >= te.width && se.height >= te.height;
-        if (part) {
-            if (full) add(r.tex);
-            continue;
-        }
-        const uint64_t area = static_cast<uint64_t>(se.width) * se.height;
-        if (!full && area > best_area) {
-            best = r.tex;
-            best_area = area;
-        }
-    }
-    if (!part && best) add(best);
-    static uint32_t told = ~0u;
-    if (told != g_su.near_n) {
-        told = g_su.near_n;
-        NXLOG_I(kTag, "scene upscale: nearest, %u input(s) of the tone-map draw sampled nearest (%s)", g_su.near_n,
-                part ? "the scene part of full-size targets" : "the largest input below the target size");
-    }
-}
-
 // SMAA ([upscale] aa): the HDR scene the tone-map draw reads goes through extras::SmaaScene and the draw reads the result, so only the 3D picture is
 // filtered (the HUD and the menus are drawn after the tone map). The scene is the first 2D colour input that is a float image (RGBA16F or R11G11B10F) of the target's size.
 static void smaa_scene_for_draw(const ProgLayout& pl, VkExtent3D te, extras::AaMode aa) {
@@ -223,54 +183,88 @@ static void smaa_scene_for_draw(const ProgLayout& pl, VkExtent3D te, extras::AaM
     }
 }
 
-void scene_upscale_for_draw(const ProgLayout& pl) {
+void tonemap_for_draw(const ProgLayout& pl) {
     g_su.clear();
-    const ShaderInfo* fs = S.stage[kFragment];
-    if (fs && extras::temporal_wanted() && S.ncolor > 0 && S.color_tex[0] && extras::hdr_is_tonemap(fs->spirv, fs->hash)) {
+    g_su.stretch_armed = true;                                            // the frame's scene stretch comes after its tone map
+    if (S.ncolor == 0 || !S.color_tex[0]) return;
+    if (extras::temporal_wanted()) {
         temporal_for_draw(pl);
         return;
     }
     const extras::AaMode aa = extras::aa_mode();
-    const bool tonemap = fs && S.ncolor > 0 && S.color_tex[0] && extras::hdr_is_tonemap(fs->spirv, fs->hash);
     // SMAA runs when the scene is shown at its own size (an upscaled scene part keeps its upscaler; SMAA does not read a part of an image)
-    if (aa != extras::AaMode::Off && tonemap && (!extras::scene_upscale_wanted() || extras::upscale_scene_scale() >= 100)) {
+    if (aa != extras::AaMode::Off && (!extras::scene_upscale_wanted() || extras::upscale_scene_scale() >= 100)) {
         Texture* tgt = S.color_tex[0].get();
         if (tex_gpu(tgt)) smaa_scene_for_draw(pl, tex_image_extent(tgt, 0), aa);
-        return;
     }
-    if (!fs || !extras::scene_upscale_wanted() || S.ncolor == 0 || !S.color_tex[0] || !extras::hdr_is_tonemap(fs->spirv, fs->hash)) return;
+}
+
+// The game's scene stretch (game::SceneStretch, #571): the first such draw after the tone map that enlarges, its one 2D colour input no
+// larger than its target. Copies of the same shader that shrink (the game's own reductions) and later copies are left alone.
+// Nearest (#232): the input is sampled with the nearest sampler (clamp to edge), so the stretch shows the scene's own pixels.
+// FSR 1 / NIS: the scene part of the input (scene_part) goes through the upscaler to the target's size, and the draw reads the result in an
+// image sized so that its own lookup at uv * fraction lands on it. The input is display-referred colour in [0,1] (8-bit sRGB, read linear).
+void scene_stretch_for_draw(const ProgLayout& pl) {
+    g_su.clear();
+    if (!g_su.stretch_armed || !extras::scene_upscale_wanted() || S.ncolor == 0 || !S.color_tex[0]) return;
     Texture* target = S.color_tex[0].get();
     if (!tex_gpu(target)) return;
-    const VkExtent3D te = tex_image_extent(target, 0);   // image sizes: with a render scale the upscaler works on the real pixels
-    if (extras::upscale_mode() == extras::UpscaleMode::Nearest) {
-        nearest_scene_for_draw(pl, te);
-        return;
-    }
+    const VkExtent3D te = tex_image_extent(target, 0);    // image sizes: with a render scale the upscaler works on the real pixels
     for (const BindingDesc& d : pl.bindings) {
         if (d.type != VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER) continue;
         const DescriptorBinding& b = d.shader->refl.bindings[d.index];
         if (b.nvn.source != NvnSource::SamplerBinding && b.nvn.source != NvnSource::HandleInUniform) continue;
-        if (view_type_for(b) != VK_IMAGE_VIEW_TYPE_2D) continue;
+        if (view_type_for(b) != VK_IMAGE_VIEW_TYPE_2D || b.image.depth) continue;
         TexResolved r = resolve_texture(d);
-        if (!r.tex || !tex_gpu(r.tex) || shares_image(r.tex, S.depth_tex.get())) continue;
+        if (!r.tex || !tex_gpu(r.tex) || tex_is_depth(r.tex)) continue;
         const VkExtent3D se = tex_image_extent(r.tex, 0);
+        if (se.width > te.width || se.height > te.height) return;          // a reduction, not the stretch
+        g_su.stretch_armed = false;
+        float fx = 1.0f, fy = 1.0f;
+        extras::scene_fraction(&fx, &fy);
+        if (extras::upscale_mode() == extras::UpscaleMode::Nearest) {
+            const bool smaller = se.width < te.width || se.height < te.height;
+            // a scene_scale below 100 always puts the scene in the top-left of full-size targets, published fraction or not
+            if (!smaller && fx >= 1.0f && fy >= 1.0f && extras::upscale_scene_scale() >= 100) return;   // a 1:1 copy
+            g_su.near[g_su.near_n++] = r.tex;
+            static Texture* told = nullptr;
+            if (told != r.tex) {
+                told = r.tex;
+                NXLOG_I(kTag, "scene upscale: nearest on the scene stretch %s (%ux%u input, fraction %.3f x %.3f, scene_scale %d%%, target %ux%u)",
+                        S.stage[kFragment]->hash.c_str(), se.width, se.height, fx, fy, extras::upscale_scene_scale(), te.width, te.height);
+            }
+            return;
+        }
         // the scene is either a smaller image or the top-left part of a full-size one (scene_part)
-        VkExtent2D in_view{se.width, se.height}, out_tex{};
-        if (!scene_part(in_view, VkExtent2D{te.width, te.height}, &in_view, &out_tex) && se.width >= te.width && se.height >= te.height) return;   // nothing to enlarge
-        if (in_view.width >= te.width && in_view.height >= te.height) return;
-        extras::SpatialUpscaler* su = extras::scene_upscaler(&device(), in_view, VkExtent2D{te.width, te.height});
+        VkExtent2D part{se.width, se.height}, out_tex{};
+        const VkExtent2D out{te.width, te.height};
+        if (!scene_part(part, out, &part, &out_tex) && se.width >= te.width && se.height >= te.height) {
+            static bool told_whole = false;
+            if (!told_whole) {
+                told_whole = true;
+                NXLOG_I(kTag, "scene upscale: the scene stretch reads its whole %ux%u input at the target's size: nothing to upscale", se.width, se.height);
+            }
+            return;
+        }
+        if (part.width >= te.width && part.height >= te.height) return;
+        extras::SpatialUpscaler* su = extras::scene_upscaler(&device(), part, out);
         if (!su) return;
         end_pass();                                                           // compute work cannot run inside a render pass
         tex_ensure_current(r.tex, *F);
         tex_transition(r.tex, *F, tex_sampled_layout(r.tex));
         VkImageView src = tex_sampled_view(r.tex, make_request(b, r));
         if (!src) return;
-        VkImageView up = su->upscale(F->cb, src, in_view, VkExtent2D{se.width, se.height}, VkExtent2D{te.width, te.height}, true,
-                                     extras::scene_upscale_prescale(), extras::upscale_sharpness(), out_tex);
+        VkImageView up = su->upscale(F->cb, src, part, VkExtent2D{se.width, se.height}, out, false, 1.0f, extras::upscale_sharpness(), out_tex);
         shadow_invalidate();
         if (up) {
             g_su.tex = r.tex;
             g_su.view = up;
+        }
+        static bool told = false;
+        if (!told) {
+            told = true;
+            NXLOG_I(kTag, "scene upscale: %s on the scene stretch %s, %ux%u -> %ux%u", extras::upscale_mode() == extras::UpscaleMode::Nis ? "NIS" : "FSR 1",
+                    S.stage[kFragment]->hash.c_str(), part.width, part.height, out.width, out.height);
         }
         return;
     }

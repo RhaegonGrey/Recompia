@@ -31,6 +31,10 @@ int index_of(const int* values, int n, int v, int otherwise) {
     for (int i = 0; i < n; ++i) if (values[i] == v) return i;
     return otherwise;
 }
+int index_of(const double* values, int n, double v, int otherwise) {
+    for (int i = 0; i < n; ++i) if (std::fabs(values[i] - v) < 1e-6) return i;
+    return otherwise;
+}
 
 constexpr int kFpsValues[] = {-1, 30, 40, 45, 60, 90, 120, 144, 165, 240, 0};
 constexpr int kFpsCount = static_cast<int>(std::size(kFpsValues));
@@ -38,6 +42,10 @@ constexpr const char* kFpsNames[kFpsCount + 1] = {"Match Display", "30", "40", "
 constexpr int kWidths[] = {1280, 1600, 1920, 2560, 3840}, kHeights[] = {720, 900, 1080, 1440, 2160};
 constexpr int kSizeCount = static_cast<int>(std::size(kWidths));
 constexpr const char* kSizeNames[kSizeCount + 1] = {"1280 x 720", "1600 x 900", "1920 x 1080", "2560 x 1440", "3840 x 2160", "Custom"};
+// [display] aspect: 0 is auto (the window's shape); read once at start (pkp_play.cpp install_render), so the row applies after a restart.
+constexpr double kAspectValues[] = {0.0, 16.0 / 9.0, 16.0 / 10.0, 21.0 / 9.0, 32.0 / 9.0};
+constexpr int kAspectCount = static_cast<int>(std::size(kAspectValues));
+constexpr const char* kAspectNames[kAspectCount + 1] = {"Auto", "16:9", "16:10", "21:9", "32:9", "Custom"};
 constexpr int kAniso[] = {0, 2, 4, 8, 16};
 constexpr const char* kAnisoNames[] = {"Game Default", "2x", "4x", "8x", "16x"};
 // In play::PromptStyle order (the row stores the enum's number).
@@ -92,7 +100,10 @@ const Row kDisplay[] = {
     names("Window Size", "The size of the window in windowed mode.", kSizeNames, kSizeCount + 1,
           [](const S& s) { for (int i = 0; i < kSizeCount; ++i) if (s.display.width == kWidths[i] && s.display.height == kHeights[i]) return i; return kSizeCount; },
           [](S& s, int v) { if (v < kSizeCount) { s.display.width = kWidths[v]; s.display.height = kHeights[v]; } }),
-    choice("Keep 16:9 Picture", "Letterbox the picture instead of stretching it to the window.", kOffOn, 2, ROW_BOOL(display.keep_aspect)),
+    names("Aspect Ratio", "The shape of the picture. Auto follows the window; 16:9 is the game's own.", kAspectNames, kAspectCount + 1,
+          [](const S& s) { return index_of(kAspectValues, kAspectCount, s.display.aspect, kAspectCount); },
+          [](S& s, int v) { if (v < kAspectCount) s.display.aspect = kAspectValues[v]; }, true),
+    choice("Letterbox", "Black bars keep the picture's shape when it does not fit the window, instead of stretching it.", kOffOn, 2, ROW_BOOL(display.keep_aspect)),
     choice("VSync", "Wait for the display between frames: no tearing, a little more delay.", kOffOn, 2, ROW_BOOL(display.vsync)),
     names("Frame Rate Limit", "The highest frame rate. Match Display follows the refresh rate.", kFpsNames, kFpsCount + 1,
           [](const S& s) { return index_of(kFpsValues, kFpsCount, s.display.fps_cap, kFpsCount); },
@@ -162,6 +173,27 @@ const Row kPicture[] = {
     number("Gamma", "Mid-tone brightness. 1.00 is the game's own.", 0, 150, "%.2f", 0.5, 0.01, ROW_STEP(extras.picture.gamma, 0.5, 0.01), true),
 };
 
+// The Mouse mode key (the Joy-Con 2 mouse mode, pkp_play.cpp): its binding in play, any key, mouse button or wheel notch, saved at once. The
+// new key replaces any other play binding of that input; an all-context binding of it still works elsewhere.
+class MouseModeKey final : public CaptureClient {
+public:
+    const char* name() const override { return "Mouse Mode Key"; }
+    std::string bound() const override {
+        std::string out;
+        for (const play::Binding& b : play::current_settings().bindings)
+            if (b.act == play::Act::MouseMode && (b.ctx == play::Ctx::Play || b.ctx == play::Ctx::All))
+                out += (out.empty() ? "" : ", ") + play::input_name(b.in);
+        return out.empty() ? "None" : out;
+    }
+    bool take(const play::InputId& in) override {
+        S s = play::current_settings();
+        std::erase_if(s.bindings, [&](const play::Binding& b) { return b.act == play::Act::MouseMode || (b.in == in && b.ctx == play::Ctx::Play); });
+        s.bindings.push_back(play::Binding{in, play::Ctx::Play, play::Act::MouseMode, play::Trig::Press, 0});
+        play::apply_settings(s);   // main thread, next frame; also writes controls.ini
+        return true;
+    }
+} g_mouse_mode_key;
+
 #define SENS(p) [](const S& s) { return static_cast<int>(std::lround(play::source_sens(s.mouse.p) * 10.0)); }, [](S& s, int v) { s.mouse.p = play::rad_per_count(v / 10.0); }
 const Row kMouse[] = {
     number("Horizontal Sensitivity", "How fast the mouse turns the camera sideways.", 1, 200, "%.1f", 0, 0.1, SENS(yaw_rad)),
@@ -170,8 +202,8 @@ const Row kMouse[] = {
     choice("Invert Horizontal", "Moving the mouse left looks right.", kOffOn, 2, ROW_BOOL(mouse.invert_x)),
     choice("Mouse Pointer in Menus", "Use the mouse as a pointer: hover, click, right click, wheel.", kOffOn, 2, ROW_BOOL(mouse.menu_cursor)),
     names("Button Icons", "The button icons in prompts. Automatic follows the last device used.", kPromptNames, static_cast<uint8_t>(std::size(kPromptNames)), ROW_ENUM(prompts.style, play::PromptStyle)),
-    dynamic("Mouse Mode Key", "Turns the Joy-Con 2 mouse mode on and off (point and click to place and break). To change it, press left or right on this row (or click it), then press the new key or mouse button. Esc cancels.",
-            mouse_mode_text, mouse_mode_max, [](const S&) { return kMmMid; }, [](S&, int) {}),
+    capture_row("Mouse Mode Key", "Turns the Joy-Con 2 mouse mode on and off (point and click to place and break). To change it, press left or right on this row (or click it), then press the new key or mouse button. Esc cancels.",
+                g_mouse_mode_key),
 };
 
 const Row kController[] = {
@@ -186,10 +218,10 @@ const Row kController[] = {
     choice("Motion Sensor", "Pass the controller's gyro to the game.", kOffOn, 2, ROW_BOOL(pad.gyro)),
     number("Motion Strength", "Scales the gyro.", 0, 78, "%.2fx", 0.1, 0.05, ROW_STEP(pad.gyro_scale, 0.1, 0.05)),
     number("Rumble Strength", "Scales the vibration.", 0, 200, "%.0f%%", 0, 1, ROW_PCT(pad.rumble_scale)),
-    dynamic("Controller Button", "Pick a controller button, then set what it presses on the next row.",
-            pad_button_text, pad_cycle_max, [](const S&) { return kPadMid; }, [](S&, int) {}),
-    dynamic("Presses", "What the controller button above presses on the Switch pad. Default keeps the built-in layout.",
-            pad_press_text, pad_cycle_max, [](const S&) { return kPadMid; }, [](S&, int) {}),
+    number("Controller Button", "Pick a controller button, then set what it presses on the next row.",
+            0, 254, "%.0f", 0, 1, [](const S&) { return 127; }, [](S&, int) {}),
+    number("Presses", "What the controller button above presses on the Switch pad. Default keeps the built-in layout.",
+            0, 254, "%.0f", 0, 1, [](const S&) { return 127; }, [](S&, int) {}),
 };
 
 // The gameplay mods (the gameplay() rows of pkp_settings_table.h), labelled as in the launcher's Settings > Gameplay (settings-schema.js
@@ -206,6 +238,7 @@ constexpr Row kGameplay[] = {
     key_row("Sort button in the bag and containers", "A Sort button in the key guide of the bag and of the container screens.", Key::InventorySort),
     key_row("Sort each time the bag opens", "Sorts the bag each time the bag or a container screen opens.", Key::InventoryAutosort),
     key_row("Search in the crafting screen", "A Search button in the key guide of the crafting screen.", Key::CraftSearch),
+    key_row("Item editor (experimental)", "Adds an Items tab to this screen that changes how many of an item you hold. Not during Link Play.", Key::ItemEditor),
     key_row("More Pokémon in town", "Experimental: more Pokémon can live in your town than the game's 25.", Key::PokemonCap),
     key_row("Pokémon in town", "With More Pokémon in town: how many can live there, 25 to 64. Visitors and spawns share the game's 64 slots, so a high number leaves them less room.", Key::PokemonCapLimit, 1, "%.0f"),
     key_row("Shoulder camera: side", "Moves the camera to the side so your character no longer blocks the view, in blocks. Right is positive, left negative; 0 is the game's own camera.", Key::CameraShoulderSide, 0.1, "%+.1f"),

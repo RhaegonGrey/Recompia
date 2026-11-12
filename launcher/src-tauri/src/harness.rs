@@ -26,8 +26,8 @@ pub enum Mode {
 /// The translator over `input` (a corpus folder with manifest.tsv / unique.tsv) into `stage`.
 fn command(exe: &Path, input: &Path, stage: &Path, jobs: usize, mode: Mode) -> Result<Command, String> {
     let jobs = if mode == Mode::Safe { jobs.clamp(1, SAFE_JOBS) } else { jobs.max(1) };
-    let mut cmd = crate::host::windows_program(exe)?;
-    cmd.arg("--batch").arg(crate::host::win_path(input)).arg("--out").arg(crate::host::win_path(stage));
+    let mut cmd = Command::new(exe);
+    cmd.arg("--batch").arg(input).arg("--out").arg(stage);
     cmd.args(["--jobs", &jobs.to_string(), "--no-val"]);
     cmd.env("DOTNET_gcServer", if mode == Mode::Fast { "1" } else { "0" });
     Ok(cmd)
@@ -40,16 +40,16 @@ struct Failure {
     reported: bool,
 }
 
-/// `run_tool` for the shader translator writing to `stage`. Under Proton its stdout and stderr never reach the launcher (#366), so
-/// a failure is explained from `stage`: the harness's own error file, or, with no `stage` folder at all, that it never started, and
-/// the last steps of its progress file.
+/// `run_tool` for the shader translator writing to `stage`. Its stdout and stderr never reach the launcher (#366), so a failure is
+/// explained from `stage`: the harness's own error file, or, with no `stage` folder at all, that it never started, and the last steps
+/// of its progress file.
 fn run_once(cmd: Command, stage: &Path, cancel: &AtomicBool, idle: bool, log: Option<&LogFn>, line: impl FnMut(&str)) -> Result<bool, Failure> {
     run_tool(cmd, cancel, idle, log, None, line).map_err(|e| {
         let report = fs::read_to_string(stage.join(HARNESS_ERROR)).ok();
         let mut why = match &report {
             Some(t) => format!("The shader translator reported:\n{}", t.trim()),
             None if !stage.is_dir() => {
-                "The shader translator never started (it creates its output folder first): the program that runs it (Proton or Wine) failed before it."
+                "The shader translator never started (it creates its output folder first): the program failed before it."
                     .to_string()
             }
             None => "The shader translator started but wrote no error report.".to_string(),

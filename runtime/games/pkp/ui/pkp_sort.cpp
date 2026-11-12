@@ -43,6 +43,7 @@
 //    (0x7100e6e4fc), so nothing is sorted and no button is shown while 0x71000376c4 (online) is true.
 #include "ui/pkp_sort.h"
 #include "core/pkp_guest.h"
+#include "core/pkp_items.h"
 #include "ui/pkp_key_guide.h"
 #include "core/pkp_layout.h"
 #include "core/pkp_settings.h"
@@ -73,15 +74,17 @@ constexpr uint64_t kPlayerOf = 0xa6fd58;         // (screen + 0x30) -> player in
 constexpr uint64_t kInventory = 0xe6dc2c;        // (player, kind, type, id, use_temp) -> slot array
 constexpr uint64_t kContainerSlots = 0x2ee4bc;   // (type, id, u32* first, u32* count) -> valid
 using layout::kOnline;
-constexpr uint64_t kMaxStack = 0x2a7f0c;         // () -> the max stack (u16)
-constexpr uint64_t kTempFlag = 0x36bbfd8;        // u8 per player: the screen works on a temp copy (an item is held)
+using layout::kMaxStack;
+constexpr uint64_t kTempFlag = layout::kItemTempFlag;
 using layout::kSaveRoot;
-constexpr uint64_t kCommon = 0x13d4920, kBagOffline = 0x830, kUseSlot = 0xc070;
+constexpr uint64_t kCommon = layout::kSaveCommon, kUseSlot = 0xc070;
+using layout::kBagOffline;
 using layout::kItemTable;                        // the item table (the table at +0 while the manager holds < 200 tables, pkp_tables.h)
 constexpr uint64_t kItemKind = 0x3a;
 constexpr uint64_t kPlayerHelper = 0x30, kActions = 0x78, kType = 0x148, kId = 0x154, kState = 0x160, kScreenKind = 0x168, kCursorKind = 0x169;
-constexpr uint32_t kBagSlots = 120, kMaxSlots = 0x800, kStoreSlots = 0x77a9;   // the stage store is the larger one
-constexpr uint32_t kIdMask = 0x1fff;
+using layout::kBagSlots;
+constexpr uint32_t kMaxSlots = 0x800, kStoreSlots = 0x77a9;   // the stage store is the larger one
+using items::kIdMask;
 // The game's input manager [main+0x3561718]: its vector at +0xcd8 maps an action to its button (u32 per action, low byte: 0..3 the d-pad,
 // 4 Y, 5 A, 6 X, 7 B, 8 (-), 9 (+), 0xa L, 0xb R, 0xc ZL, 0xd ZR, 0xe / 0xf the stick clicks; 0x7101126e18 reads it for the key guide icons).
 using layout::kInputMgr;
@@ -139,9 +142,9 @@ struct Slot {
     uint32_t key;       // kind << 16 | id (empty slots are not keyed)
     uint32_t from;
 };
-constexpr uint64_t kCountMask = uint64_t{0xff} << 32;
-uint32_t count_of(uint64_t p) { return static_cast<uint32_t>((p >> 32) & 0xff); }
-uint64_t with_count(uint64_t p, uint32_t n) { return (p & ~kCountMask) | (uint64_t{n} << 32); }
+using items::kCountMask;
+using items::count_of;
+using items::with_count;
 
 void log_list(const char* what, uint64_t arr, uint32_t n) {
     char line[1600];

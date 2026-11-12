@@ -694,6 +694,7 @@ void replay_shutdown() {
     out_reset();
     g_sets.cache.clear();
     g_copies.shutdown();
+    ui_shutdown();
 }
 
 // Gauge (nxrt/gauge.h): reads the atomic mirror above, never the map. Removed before the globals are destroyed.

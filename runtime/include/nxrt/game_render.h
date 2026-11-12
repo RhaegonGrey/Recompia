@@ -4,8 +4,10 @@
 // Every part is optional. A null part turns off what needs it:
 //   readback_defer   none: [nvn] readback_defer never defers a read
 //   camera           none: no temporal upscaling (FSR 3 / DLSS / DLAA find no camera, nothing is jittered)
-//   tonemaps         none: no shader is the tone map (no HDR variant, no scene upscaler, no temporal pass)
+//   tonemaps         none: no shader is the tone map (no HDR variant, no scene anti-aliasing, no temporal pass)
+//   scene_stretch    none: no scene upscaler (a scene below its targets' size keeps the game's own stretch)
 //   loop_guards      none: no compute loop gets its count limited ([nvn] loop_guard has nothing to do)
+//   ui_after_picture false: the game's 2D cannot be hidden (nxrt/ui_layer.h; a mod's ui_visible is not offered)
 // Header-only and free of Vulkan, so game.h users that do not link the graphics back end can include it.
 #pragma once
 #include <cstdint>
@@ -57,6 +59,15 @@ struct LoopGuard {
     uint32_t stride = 1;                    // texels an item
 };
 
+// The draw that enlarges a scene rendered below its targets' size (extras::scene_fraction) over the frame. The game renders the scene and
+// its post chain into the top-left part of full-size targets, and one later copy draw stretches that part over a target of the same size
+// (its texture coordinates span the fraction): a draw whose fragment shader is `shader`, into a colour target at least as large as its one
+// sampled 2D colour input, after the frame's tone-map draw. The same shader may make other copies (into smaller targets, or before the
+// tone map); they are left alone. The scene upscalers ([upscale] mode fsr1, nis, nearest) replace the bilinear stretch of that draw.
+struct SceneStretch {
+    const char* shader = nullptr;           // the fragment shader's cache hash, as the back end names it ("c4664b38f6a87835")
+};
+
 struct Render {
     const ReadbackShape* readback_defer = nullptr;
     const CameraBlock* camera = nullptr;
@@ -64,6 +75,11 @@ struct Render {
     uint32_t tonemap_count = 0;
     const LoopGuard* loop_guards = nullptr;
     uint32_t loop_guard_count = 0;
+    // The game draws its 2D (HUD, markers, menus, text) after its 3D picture, as draws with vertex inputs into the texture it presents, and
+    // everything else that reaches that texture (the composite of the picture, fades) as full-screen draws without vertex inputs. Then the
+    // replay can leave the 2D out (nxrt/ui_layer.h).
+    bool ui_after_picture = false;
+    const SceneStretch* scene_stretch = nullptr;
 };
 
 }  // namespace nxrt::game

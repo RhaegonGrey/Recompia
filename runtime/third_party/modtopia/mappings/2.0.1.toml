@@ -1,0 +1,51 @@
+# Pokopia mappings for game version 2.0.1 (main build 76a489f3...). Names are the community's; every entry says where it is and how it was
+# checked. Addresses are module + offset; `word` is the instruction at a function's entry, so a host refuses a wrong match.
+# Format: docs/mappings.md. Evidence for each entry is in mappings/NOTES.md.
+game = "2.0.1"
+build_id = "76a489f3bd3642fa5e18bd83d32c98ba"
+
+# What the loader's own core events read
+[core]
+area = { global = "GameMgr", field = "GameMgr.stage", ready = "GameMgr.permissions" }
+
+[functions]
+"Camera::BuildProjection" = { at = "main+0x1f12114", word = 0xd503237f }   # x0 = the camera; builds its projection from fov, aspect, near, far
+"Ui::WorldToScreen" = { at = "main+0x10fc06c", word = 0x93401c48 }         # a world point to 1920x1080 pixels at x1, through a view (w2)
+"GameMgr::IsOnline" = { at = "main+0x207b0", word = 0xb001aa08 }           # w0 = 1 while a Link Play session is open
+"Story::Update" = { at = "main+0xba660", word = 0xd503237f }               # the story system's per-frame update (s0 = the frame's time)
+"LinkPlay::BuildPermissionMask" = { at = "main+0xb0f60", word = 0xd503237f }
+"Camera::LookAt" = { at = "main+0x1f12368", word = 0xd503237f }           # (camera x0, eye* x1, target* x2, up* x3; s1 fov, s2 near, s3 far, s4 aspect); +0x6c: the view is built
+"Camera::Update" = { at = "main+0x1f11e78", word = 0xd503237f }           # x0 = a camera: its view is built again from eye, target and up when they changed (the call at +0x30)
+"Clock::SetNow" = { at = "main+0x1129004", word = 0xd503237f }            # x0 = a date-time: the real clock as six s32 (year, month, day, hour, minute, second)
+"TimeMgr::Update" = { at = "main+0x1f79b8", word = 0xd503237f }           # x0 = the time manager, s0 = the frame's time: the game's clock moves on
+"TimeMgr::Sync" = { at = "main+0x1f9140", word = 0xd503237f }             # the game's clock is set by the real one (every 10 s and at loads)
+"Player::MoveSpeed" = { at = "main+0x6d8274", word = 0xd503237f }        # a character's movement from the stick: it asks for the walking speed (in s0 after +0x984) and the running or walking speed (after +0x9d8)
+"Player::SpeedFactor" = { at = "main+0x6cab44", word = 0x39417408 }      # (character x0, mode w1: 0 or 1) -> s0, a factor from the tuning tables (percent / 100); other modes 1.0
+"Message::UpdateSpeed" = { at = "main+0xe954c4", word = 0xd503237f }     # x0 = a message: its characters per frame, stored at +0x200 by the instruction at +0x150 (from s0)
+"Item::MaxStack" = { at = "main+0x2a7f0c", word = 0xd503237f }           # -> w0, the most of an item in one slot: a u16 the instruction at +0x70 reads from the row in x8
+"Drops::Roll" = { at = "main+0x7971b0", word = 0xb40008a1 }              # (x1 four stacks of 16 bytes, x2 how many filled, x3 the drop table's id); at its exit +0x46c: x20 the stacks, [x19] the number
+"Weather::Set" = { at = "main+0x1f8604", word = 0xd503237f }              # (weather manager x0, id w1: 1 clear, 2 cloudy, 3 rain; lock w2; s0 delay, s1 fade seconds or -1)
+
+[globals]
+GameMgr = "main+0x3561710"   # a pointer to the game manager
+EnvMgr = "main+0x35616f8"    # a pointer to the environment manager: the weather manager is at +0x10, the time manager at +0x58
+SaveRoot = "main+0x3561930"  # a pointer to the loaded save's data
+Tuning = "main+0x36ca678"    # a pointer to nine pointers to the game's tuning tables (int32 entries, mostly percent)
+
+[fields]
+"GameMgr.stage" = { offset = 0x18, size = 1 }        # the area the player is in (12: Palette Town; 1-10: the story towns)
+"GameMgr.permissions" = { offset = 0x8c, size = 4 }  # the permission mask's low 32 bits (36 in all, the rest at +0x90): 0 at the title, set once the world is up
+"GameMgr.online" = { offset = 0x90, size = 1 }       # bit 0: online (Link Play)
+"Camera.eye" = { offset = 0x10, size = 16 }          # x, y, z (floats), as Camera::LookAt stored them
+"Camera.target" = { offset = 0x20, size = 16 }
+"Camera.up" = { offset = 0x30, size = 16 }
+"Save.clock_flags" = { offset = 0x13d3630, size = 4 }  # bit 1: the weather is locked (no new draw)
+"Save.time_of_day" = { offset = 0x13d363c, size = 4 }  # a float, seconds since midnight (0 to 86400)
+"Save.weather" = { offset = 0x13d3a56, size = 1 }      # the current weather's id, 0 for none
+"Camera.near" = { offset = 0x140, size = 4 }
+"Camera.far" = { offset = 0x144, size = 4 }
+"Camera.fov" = { offset = 0x148, size = 4 }          # vertical, radians
+"Camera.aspect" = { offset = 0x14c, size = 4 }       # 16:9 = 1.7778
+
+[areas]
+"12" = "Palette Town"

@@ -10,8 +10,8 @@
 #pragma once
 #include <atomic>
 #include <cstdint>
-#if defined(_MSC_VER)
-#include <intrin.h>
+#if defined(_MSC_VER) || !defined(_WIN32)
+#include <intrin.h>   // __rdtsc: MSVC on Windows, compat/intrin.h on macOS
 #endif
 
 namespace nxrt::ft {

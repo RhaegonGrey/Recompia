@@ -360,7 +360,7 @@ void window_group(const LiveStatus& live, Page& p) {
         ImGui::TextDisabled("now %d x %d", live.width, live.height);
     }
     ImGui::EndDisabled();
-    if (ImGui::Checkbox("Keep the 16:9 picture, letterbox the rest", &d.keep_aspect)) mark(p);
+    if (ImGui::Checkbox("Letterbox instead of stretching", &d.keep_aspect)) mark(p);
 }
 
 void framerate_group(UiHost& host, const LiveStatus& live, Page& p) {

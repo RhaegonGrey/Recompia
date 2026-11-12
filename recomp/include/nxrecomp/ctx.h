@@ -172,6 +172,42 @@ NX_DEF_MEM(8) NX_DEF_MEM(16) NX_DEF_MEM(32) NX_DEF_MEM(64)
     }
 NX_DEF_STX(8) NX_DEF_STX(16) NX_DEF_STX(32) NX_DEF_STX(64)
 
+/* LDAR and STLR (and STLUR): the guest's ordered load and store. Guest code treats the pair as sequentially consistent
+ * with each other (RCsc), which is stronger than a C acquire load and a C release store, so the ordering each host needs
+ * is decided here rather than by __ATOMIC_ACQUIRE.
+ *  - AArch64 keeps an STLR ahead of a later LDAR. A C acquire load is weaker: for an arm64 host clang compiles
+ *    __ATOMIC_ACQUIRE to LDAPR (FEAT_LRCPC), which may complete before an earlier STLR to another address. LDAR is a
+ *    seq_cst load here, with a full barrier before it: a plain store followed by an LDAR of another word is unordered on
+ *    every weakly ordered host (the store buffer lets the load go first), and guest code relies on the pair (a
+ *    Dekker-style wake-up: store my flag with STLR, read the other side's word with a plain load).
+ *  - Guest code also counts on a load after an STLR not passing it, which the architecture does not promise either. On
+ *    arm64 the STLR is followed by DMB ISH; on x86 the seq_cst store is an XCHG, a full barrier already.
+ *  - On x86 a store is ordered before a later load (TSO), so the barrier before LDAR only has to stop the compiler from
+ *    sinking the store past the load: a signal fence, no instruction.
+ * LDAPR (FEAT_LRCPC) stays a C acquire load (cxx.h nx::ld_acq): RCpc is the C meaning.
+ * Measured on an M5 Max: about 1.5-2.6 ns per LDAR/STLR pair, 0.1-0.2 % of one core in a census of Wonder; the litmus
+ * (store my flag, LDAR theirs, two threads) lost up to 37 % of rounds on arm64 and 59 % on x86 before this, none after. */
+#if defined(__aarch64__) || defined(_M_ARM64)
+#define NX_BEFORE_LDAR() __atomic_thread_fence(__ATOMIC_SEQ_CST)
+#define NX_AFTER_STLR() __atomic_thread_fence(__ATOMIC_SEQ_CST)
+#elif defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
+#define NX_BEFORE_LDAR() __atomic_signal_fence(__ATOMIC_SEQ_CST)   /* TSO: only the compiler needs stopping */
+#define NX_AFTER_STLR() ((void)0)
+#else
+#define NX_BEFORE_LDAR() __atomic_thread_fence(__ATOMIC_SEQ_CST)
+#define NX_AFTER_STLR() __atomic_thread_fence(__ATOMIC_SEQ_CST)
+#endif
+#define NX_DEF_ORDERED(bits) \
+    static inline uint##bits##_t ldar##bits(uint64_t a) { \
+        NX_BEFORE_LDAR(); \
+        return __atomic_load_n((uint##bits##_t *)(uintptr_t)a, __ATOMIC_SEQ_CST); \
+    } \
+    static inline void stlr##bits(uint64_t a, uint##bits##_t v) { \
+        __atomic_store_n((uint##bits##_t *)(uintptr_t)a, v, __ATOMIC_SEQ_CST); \
+        NX_AFTER_STLR(); \
+    }
+NX_DEF_ORDERED(8) NX_DEF_ORDERED(16) NX_DEF_ORDERED(32) NX_DEF_ORDERED(64)
+
 /* Exclusive pairs. 32-bit pair: one 64-bit access through ex_addr / ex_val and stx64. 64-bit pair: a 128-bit access,
  * compared and swapped as a whole (the monitor keeps the high half in ex_val_hi). Needs -mcx16 on x64 (cmpxchg16b). */
 static inline void ldxp128(Ctx *c, uint64_t a, uint64_t *lo, uint64_t *hi) {

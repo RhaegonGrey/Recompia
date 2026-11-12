@@ -5,6 +5,7 @@ import { api } from './api.js';
 import { num, t } from './i18n.js';
 import { fromBackend } from './backend-text.js';
 import { confirm, errCode, errText, esc, icon, toast } from './ui.js';
+import { keptLine, updatedLine } from './mods-model.js';
 import { canInstall, canUpdate, gamePhase, needsFinish, taskOf } from './action.js';
 import { askOnlineOnce } from './online.js';
 
@@ -107,6 +108,32 @@ export const store = {
     store.refreshNews(false).then(() => store.refreshNews(true));
     afterUpdate();
     store.refreshStorage().then(offerCompact);
+    store.keepLockedMods().then(() => store.updateMods());
+  },
+
+  /** The mod the launcher keeps on (Community Achievements and its sharing, mods_lock.rs): installed or switched back on at start unless
+   *  the player unlocked it, then one line says what changed. Offline or busy: nothing, the next start tries again. Never in Play's way. */
+  async keepLockedMods() {
+    try {
+      const line = keptLine(await api.modsKeepLocked());
+      if (!line) return;
+      toast(line, 'ok');
+      await store.refresh();   // a new mod may need hook points: readiness says Set up again
+    } catch (e) {
+      console.warn('mods_keep_locked', e);
+    }
+  },
+
+  /** Mods by themselves (launcher preference, off by default; once per session in Rust): says once which were updated. Silent otherwise. */
+  async updateMods() {
+    try {
+      const done = await api.modsAutoUpdate();
+      if (!done.length) return;
+      toast(updatedLine(done), 'ok');
+      await store.refresh();   // a new version may need other hook points: readiness says Set up again
+    } catch (e) {
+      console.warn('mods_auto_update', e);
+    }
   },
 
   /** Reloads shader_storage (it lists the cache folder: a second or two on a hard drive, so it is not part of refresh()). */
@@ -204,12 +231,13 @@ export const store = {
     }
   },
 
-  async play() {
+  /** `withoutMods`: this one start runs without mods (the player's way out when a mod keeps the game from starting). */
+  async play({ withoutMods = false } = {}) {
     if (store.state.starting) return;
     await askOnlineOnce();   // once per install, before the first Play: online presence is off unless the player says yes
     set({ starting: true }, 'task');
     try {
-      await api.play();
+      await api.play(withoutMods ? { withoutMods } : undefined);
     } catch (e) {
       toast(errText(e), 'error');
       store.refresh();

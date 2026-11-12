@@ -260,7 +260,9 @@ def lift_module(spec, outdir, jobs=8, shards=0, bucket=0xC000, log=print):
         load_sites(spec['sites'], env)
     env.compute_starts()
     for a in sorted(env.sites['midhook']):                 # a mid-function hook makes its address a function of its own
-        if a not in env.ends:
+        if a in env.ends:                                  # ... but at a function's entry the check is never compiled (emit_function)
+            log('%s: WARNING midhook 0x%x is at a known function entry and is never compiled: use entryhook' % (img.name, a))
+        else:
             env.ends[a] = env.extent(a)
     env.starts = sorted(env.ends)
     env.load_eh()

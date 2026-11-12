@@ -1,6 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Dear ImGui overlay: the frame rate counter, the pointer arrow, the "Preparing shaders" note and the save-failure notice.
+// Dear ImGui overlay: the frame rate counter, the pointer arrow, the "Preparing shaders" note, the save-failure notice and the short
+// messages of nxrt/notices.h.
 #include "overlay_impl.h"
+
+#include <cstring>
+
+#include <imgui_internal.h>   // RegisterUserTexture, UnregisterUserTexture
 
 namespace nxrt::gfx {
 using namespace overlay_detail;
@@ -137,6 +142,72 @@ void Overlay::Impl::draw_save_notice(const FrameInfo& f) {
     ImDrawList* dl = ImGui::GetForegroundDrawList();
     dl->AddRectFilled(ImVec2(x0, y0), ImVec2(x0 + sz.x + 2.f * pad, y0 + sz.y + 2.f * pad), IM_COL32(120, 0, 0, 200), size * 0.3f);
     dl->AddText(font, size, ImVec2(x0 + pad, y0 + pad), IM_COL32(255, 255, 255, 255), text);
+}
+
+void Overlay::Impl::draw_notices(const FrameInfo& f, const std::vector<notices::Notice>& list) {
+    if (list.empty()) return;
+    ImFont* font = ImGui::GetFont();
+    const float size = std::clamp(std::round(static_cast<float>(f.extent.height) / 50.f), 13.f, 32.f);
+    const float pad = size * 0.45f, gap = size * 0.3f;
+    const float pic_h = size * 3.f;  // a message's picture: about three text lines high, its own aspect
+    const float W = static_cast<float>(f.extent.width), H = static_cast<float>(f.extent.height);
+    const float wrap = W * 0.45f;   // long messages wrap at a little under half the picture's width
+    ImDrawList* dl = ImGui::GetForegroundDrawList();
+    float y = H - size * 1.5f;      // from the bottom up: the newest lowest
+    for (auto it = list.rbegin(); it != list.rend(); ++it) {
+        ImTextureData* tex = it->image ? notice_texture(it->image) : nullptr;
+        const float pic_w = tex ? pic_h * static_cast<float>(it->image->w) / static_cast<float>(it->image->h) : 0.f;
+        const float lead = tex ? pic_w + (it->text.empty() ? 0.f : pad) : 0.f;   // the text starts right of the picture
+        const ImVec2 sz = it->text.empty() ? ImVec2(0, 0) : font->CalcTextSizeA(size, FLT_MAX, wrap, it->text.c_str());
+        const float body_h = std::max(sz.y, tex ? pic_h : 0.f);
+        const float x0 = size, y0 = y - body_h - 2.f * pad;
+        if (y0 < 0) break;
+        dl->AddRectFilled(ImVec2(x0, y0), ImVec2(x0 + lead + sz.x + 2.f * pad, y), IM_COL32(0, 0, 0, 170), size * 0.3f);
+        if (tex) {
+            const float py = y0 + pad + (body_h - pic_h) * 0.5f;
+            dl->AddImage(tex->GetTexRef(), ImVec2(x0 + pad, py), ImVec2(x0 + pad + pic_w, py + pic_h));
+        }
+        if (!it->text.empty())
+            dl->AddText(font, size, ImVec2(x0 + pad + lead, y0 + pad + (body_h - sz.y) * 0.5f), IM_COL32(255, 255, 255, 240), it->text.c_str(), nullptr, wrap);
+        y = y0 - gap;
+    }
+}
+
+ImTextureData* Overlay::Impl::notice_texture(const std::shared_ptr<const notices::Image>& img) {
+    for (const NoticeTex& n : notice_tex)
+        if (n.img == img) return n.tex;
+    if (img->w <= 0 || img->h <= 0 || img->rgba.size() != static_cast<size_t>(img->w) * img->h * 4) return nullptr;
+    auto* tex = IM_NEW(ImTextureData)();
+    tex->Create(ImTextureFormat_RGBA32, img->w, img->h);
+    std::memcpy(tex->GetPixels(), img->rgba.data(), img->rgba.size());
+    ImGui::RegisterUserTexture(tex);
+    notice_tex.push_back(NoticeTex{img, tex});
+    return tex;
+}
+
+void Overlay::Impl::retire_notice_textures(const std::vector<notices::Notice>* live) {
+    std::erase_if(notice_tex, [&](NoticeTex& n) {
+        if (n.tex->WantDestroyNextFrame) {
+            if (n.tex->Status != ImTextureStatus_Destroyed) return false;   // the backend still holds it (frames in flight)
+            ImGui::UnregisterUserTexture(n.tex);
+            IM_DELETE(n.tex);
+            return true;
+        }
+        if (live && std::none_of(live->begin(), live->end(), [&](const notices::Notice& m) { return m.image == n.img; }))
+            n.tex->WantDestroyNextFrame = true;   // its message is gone: not drawn again from here on
+        return false;
+    });
+}
+
+void Overlay::Impl::free_notice_textures() {
+    ImGuiContext* prev = ImGui::GetCurrentContext();
+    ImGui::SetCurrentContext(imgui);
+    for (NoticeTex& n : notice_tex) {
+        ImGui::UnregisterUserTexture(n.tex);
+        IM_DELETE(n.tex);
+    }
+    notice_tex.clear();
+    ImGui::SetCurrentContext(prev);
 }
 
 

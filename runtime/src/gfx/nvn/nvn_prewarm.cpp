@@ -40,6 +40,7 @@
 #include "nvn_gpu_internal.h"
 #include "nvn_fnv.h"
 #include "nvn_pipeline.h"
+#include "nvn_thread.h"
 
 namespace nxrt::nvn::be::gpu {
 namespace {
@@ -83,8 +84,8 @@ std::unordered_multimap<uint64_t, size_t> g_by_any;          // any stage's hash
 std::unordered_set<uint64_t> g_digests;                      // recorded keys
 std::deque<std::shared_ptr<Job>> g_queue;                    // a job can sit in it twice (moved ahead): the second visit skips it
 std::unordered_map<uint64_t, std::vector<std::shared_ptr<Job>>> g_jobs;   // by digest; a job leaves when a draw takes it or takes it over
-std::vector<std::thread> g_workers;
-std::thread g_saver;
+std::vector<BigThread> g_workers;
+BigThread g_saver;
 PrewarmStats g_stats;
 
 uint64_t parse_hash(const std::string& hex) {
@@ -373,8 +374,11 @@ void prewarm_init() {
         }
         const unsigned hw = std::max(1u, std::thread::hardware_concurrency());
         const int64_t want = config_get_int("nvn", "prewarm_threads", std::clamp<int64_t>(hw / 6, 1, 4));
-        for (int64_t i = 0; i < want; ++i) g_workers.emplace_back(worker_main);
-        g_saver = std::thread(saver_main);
+        for (int64_t i = 0; i < want; ++i) {
+            g_workers.emplace_back();
+            g_workers.back().start("nvn-prewarm", 16, worker_main);
+        }
+        g_saver.start("nvn-prewarm-save", 16, saver_main);
         NXLOG_I(kTag, "prewarm: %zu recorded pipelines (+%zu compute%s) from %s, %zu worker threads; %s", g_recs.size(), g_cs_recs.size(),
                 compute_prewarm_on() ? ", first in line" : ", not built: [nvn] compute_prewarm is false", g_path.c_str(), g_workers.size(),
                 boot ? "all queued from boot, in the order they were first used" : "each queued when the game sets one of its shaders ([nvn] prewarm_boot is false)");
@@ -511,8 +515,8 @@ bool prewarm_take(const GraphicsKey& key, VkPipeline* out, const std::function<b
 }
 
 void prewarm_shutdown() {
-    std::vector<std::thread> workers;
-    std::thread saver;
+    std::vector<BigThread> workers;
+    BigThread saver;
     {
         std::lock_guard<std::mutex> lk(g_mu);
         if (!g_inited) return;

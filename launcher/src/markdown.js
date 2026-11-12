@@ -1,7 +1,7 @@
 // Patch notes: GitHub release bodies and CHANGELOG.md to HTML. Pure, no Tauri import, so `node --test` runs it.
 // Everything is escaped first and the markup is applied to the escaped text, so nothing in a note can open a tag or an
 // attribute. The only thing that can leave the page is <a data-url> on https://github.com/; it has no href, so a click
-// goes to the page's one listener (open_release_url) and never navigates the webview.
+// goes to the page's one listener (open_link) and never navigates the webview.
 //
 // Images (`![alt](url)`) become their alt text: the app's CSP allows no remote images.
 
@@ -9,7 +9,7 @@ import { date } from './i18n.js';
 
 const ISSUES = 'https://github.com/featureJosh/pokopia-recomp/issues/';
 
-// What open_release_url accepts, tested on escaped text: an escaped & " ' < > starts with "&", so it never gets through.
+// What open_link accepts, tested on escaped text: an escaped & " ' < > starts with "&", so it never gets through.
 const SAFE_URL = /^https:\/\/github\.com\/[^\s&\\\u0001\u0002]*$/;
 
 const FENCE = /^\s*(`{3,}|~{3,})/;

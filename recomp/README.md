@@ -25,8 +25,8 @@ Python is `tools\.venv\Scripts\python.exe` at the repository root (3.13; package
 23 clang-cl, CMake, Ninja, sccache; `scripts\nx_env.cmd <command>` runs a command with the MSVC environment set up.
 
     python -m nxrecomp lift  <module.nso|prog.elf> <outdir> [--game pkp] [--base 0x7100000000] [--name main] [--index N]
-                             [--shards 16] [--jobs 8] [--patches FILE] [--sites FILE] [--spin-yield]
-                             [--locals off|exact|aapcs]
+                             [--shards 16] [--jobs 8] [--patches FILE] [--sites FILE]... [--spin-yield]
+                             [--locals off|exact|aapcs]       (--sites again merges another site list by address)
     python -m nxrecomp cover <module.nso|prog.elf> [--game pkp]      per-instruction-word translation coverage of .text
     python -m nxrecomp.funcs <module> --out functions.tsv             function boundaries and the evidence for each
     python -m nxrecomp build-info [--game pkp]                       the game's module table and the compile flags (JSON)

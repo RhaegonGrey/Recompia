@@ -55,6 +55,20 @@ GaugeHook gauge_underruns("audio.underruns", [] { return static_cast<int64_t>(cu
 GaugeHook gauge_queued_buffers_peak("audio.queued_buffers_peak", [] { return static_cast<int64_t>(current_stats().queued_peak); });
 GaugeHook gauge_queued_frames_peak("audio.queued_frames_peak", [] { return static_cast<int64_t>(current_stats().queued_peak_frames); });
 GaugeHook gauge_queued_frames_low("audio.queued_frames_low", [] { return static_cast<int64_t>(current_stats().queued_low_frames); });
+
+// The sink [audio] sink = auto picks on this platform. Naming it explicitly is the same request, so the name is also what the
+// warning below offers.
+std::string platform_sink_name() {
+#if defined(_WIN32)
+    return "xaudio2";
+#elif defined(__APPLE__)
+    return "coreaudio";
+#elif defined(__linux__)
+    return "sdl3";
+#else
+    return {};
+#endif
+}
 }  // namespace
 
 void NullSink::close() { NXLOG_I("audio", "%s", format_stats(name(), stats()).c_str()); }
@@ -74,9 +88,11 @@ std::shared_ptr<AudioSink> sink() {
     if (!g_sink) {
         std::shared_ptr<AudioSink> chosen;
         const std::string want = config_get_str("audio", "sink", "auto");
+        const std::string platform = platform_sink_name();
         if (want == "paced") {
             chosen = make_paced_sink(config_get_double("audio", "paced_ppm", 0.0));
-        } else if (want == "xaudio2" || want == "auto") {
+        } else if (want == "auto" || (!platform.empty() && want == platform)) {
+#if defined(_WIN32)
             chosen = make_xaudio2_sink();
             if (!chosen) {
                 NXLOG_W("audio", "XAudio2 is not available: using the null sink (no sound)");
@@ -86,12 +102,37 @@ std::shared_ptr<AudioSink> sink() {
             } else {
                 chosen->close();
             }
+#elif defined(__APPLE__)
+            chosen = make_coreaudio_sink();
+            if (!chosen || !chosen->open(48000, 2)) {   // the real open comes with the first frames; this only finds out whether a device is there
+                NXLOG_W("audio", "CoreAudio cannot open an output device: using the null sink (no sound)");
+                chosen.reset();
+            } else {
+                chosen->close();
+            }
+#elif defined(__linux__)
+            chosen = make_sdl3_sink();
+            if (!chosen) {
+                NXLOG_W("audio", "SDL3 is not linked in this build: using the null sink (no sound)");
+            } else if (!chosen->open(48000, 2)) {   // the real open comes with the first frames; this only finds out whether a device is there
+                NXLOG_W("audio", "SDL3 cannot open an output device: using the null sink (no sound)");
+                chosen.reset();
+            } else {
+                chosen->close();
+            }
+#else
+            NXLOG_W("audio", "no host audio output on this platform: using the null sink (no sound)");
+#endif
         } else if (want != "null") {
-            NXLOG_W("audio", "[audio] sink = %s is not a sink name (auto, xaudio2, paced, null): using the null sink", want.c_str());
+            std::string names = "auto";
+            if (!platform.empty()) names += ", " + platform;
+            names += ", paced, null";
+            NXLOG_W("audio", "[audio] sink = %s is not a sink name (%s): using the null sink", want.c_str(), names.c_str());
         }
         if (!chosen) chosen = std::make_shared<NullSink>();
         const std::string wav = config_get_str("audio", "wav_dump", "");
         if (!wav.empty()) chosen = make_wav_tee(chosen, wav);
+        chosen = make_voice_mixer(chosen);   // extra voices (mods' sound) under the game's output; also in the WAV dump
         g_sink = chosen;
         NXLOG_I("audio", "host audio sink: %s", g_sink->name());
     }

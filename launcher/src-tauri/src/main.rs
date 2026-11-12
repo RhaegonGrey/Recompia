@@ -7,10 +7,13 @@ mod config;
 mod dialogs;
 mod dlss;
 mod dlss_cmds;
+mod download;
 mod dump;
 mod dump_cmds;
 mod error;
 mod events;
+mod achievements;
+mod achievements_cmds;
 mod fsutil;
 mod gamebuild;
 mod guard;
@@ -20,6 +23,13 @@ mod ini;
 mod lan;
 mod linkcheck;
 mod linkcheck_cmds;
+mod modtopia_ffi;
+mod mods;
+mod mods_catalog;
+mod mods_cmds;
+mod mods_install;
+mod mods_lock;
+mod mods_update;
 mod nsp;
 mod launch;
 mod nup;
@@ -121,7 +131,7 @@ fn main() {
             update_cmds::list_builds,
             update_cmds::install_version,
             update_cmds::cancel_update,
-            open::open_release_url,
+            open::open_link,
             config::save_config,
             readiness::get_overview,
             dialogs::pick_folder,
@@ -185,6 +195,18 @@ fn main() {
             linkcheck_cmds::link_probe,
             linkcheck_cmds::setup_facts,
             linkcheck_cmds::tailscale_peers,
+            mods_cmds::mods_list,
+            mods_cmds::mods_set_enabled,
+            mods_cmds::mods_move,
+            mods_cmds::mods_set_setting,
+            mods_cmds::mods_remove,
+            mods_cmds::mods_catalog,
+            mods_cmds::mods_install,
+            mods_cmds::mods_auto_update,
+            mods_cmds::mods_keep_locked,
+            mods_cmds::mods_set_lock,
+            mods_cmds::open_mods_dir,
+            achievements_cmds::achievements_view,
         ])
         .run(tauri::generate_context!())
         .expect("error while running the launcher");

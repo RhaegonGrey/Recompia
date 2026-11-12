@@ -17,6 +17,7 @@
 
 #include <atomic>
 #include <cstring>
+#include <string>
 #include <vector>
 
 #include "nxrt/dispatch.h"
@@ -24,6 +25,7 @@
 #include "nxrt/log.h"
 #include "nxrt/memory.h"
 #include "nxrt/module.h"
+#include "nxrt/mods.h"
 #include "nxrt/services_api.h"
 
 namespace nxrt::games::pkp {
@@ -54,6 +56,16 @@ struct State {
     std::atomic<bool> logged_change{false};
     std::atomic<uint64_t> changes{0};
 };
+// The co-op mods fingerprint's names (services ldnapi::set_coop_mods): our own features first (Story co-op while armed), then the Modtopia
+// gameplay mods that are on, "id@version" sorted (nxrt/mods.h; Modtopia HOST.md section 3, Link Play). Without mods: our list alone.
+std::vector<std::string> coop_mods(bool story) {
+    std::vector<std::string> names;
+    if (story) names.emplace_back(kStoryName);
+    const std::vector<std::string> mods = nxrt::mods::gameplay_mods();
+    names.insert(names.end(), mods.begin(), mods.end());
+    return names;
+}
+
 State& st() {
     static State s;
     return s;
@@ -174,7 +186,7 @@ void install(const FeatureInstall& in) {
     s.logged_story.store(false);
     s.logged_story_host.store(false);
     services::ldnapi::set_session_variant(0, kInteractName);
-    services::ldnapi::set_coop_mods({});
+    services::ldnapi::set_coop_mods(coop_mods(false));
     bool want_story = story;
     if (want_story && !services::ldnapi::native_protocol()) {
         NXLOG_W(kTag, "Story co-op ([pkp] link_story_coop): ignored, it needs [net] protocol = native (the relay Link Play has no such setting)");
@@ -219,7 +231,7 @@ InteractCheck story_arm(const std::string& build_id, const StorySiteFacts (&fact
         }
     }
     if (c == InteractCheck::Ok) {
-        services::ldnapi::set_coop_mods({kStoryName});
+        services::ldnapi::set_coop_mods(coop_mods(true));
         s.story_armed.store(true, std::memory_order_release);
         NXLOG_I(kTag, "Story co-op: armed, %zu sites (build %s); Link Play sessions are refused to players without it (mods fingerprint)",
                 kStorySiteCount, shown.c_str());

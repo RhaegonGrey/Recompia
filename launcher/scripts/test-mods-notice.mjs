@@ -19,7 +19,7 @@ assert.equal(modsNotice({}, gk).lines.length, 1);   // no experimental keys give
 // the real defaults through the schema: every mod on except the opt-in one (Search), and the row is in Game > Gameplay
 const empty = { pkp: {}, controls: {}, config: { channel: 'stable' }, controls_exists: false };
 const v = readAll(empty);
-assert.deepEqual(modsNotice(v, gk, EXP).gameplay, ['Running jump', 'Camera aim', 'Sort']);
+assert.deepEqual(modsNotice(v, gk, EXP).gameplay, ['Running jump', 'Camera aim', 'Sort', 'Pokemon cap']);
 assert.ok(!gk.includes('camera_aim_reach') && !gk.includes('title_quit'), 'a mod setting and a hidden mod are not listed');
 const row = SECTIONS.flatMap((s) => s.groups).flatMap((g) => g.rows).find((r) => r.id === 'mods_notice');
 assert.ok(row && row.type === 'note', 'mods_notice note row exists');

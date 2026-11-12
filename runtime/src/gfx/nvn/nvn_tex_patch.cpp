@@ -92,6 +92,7 @@ bool guest_texture_info(const void* guest, GuestTexInfo* out) {
     out->layers = t->layers;
     out->bc7 = bc7_texture(guest) != nullptr;
     out->srgb = t->fmt && t->fmt->srgb;
+    out->format = t->fmt ? static_cast<uint32_t>(t->fmt->nvn) : 0;
     return true;
 }
 

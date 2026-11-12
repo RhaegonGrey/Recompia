@@ -11,13 +11,13 @@
 //  * Text ids above 800 are skipped by the game's guards; text 0xa8 is a bare "show this string" entry in every language.
 //
 // 14 free ids for about 60 rows, so the ids are slots: only one tab shows at a time, and a tab change rewrites the slot records and swaps
-// the slot values in the vector. g.cur / g.orig hold every tab's values; they reach Settings and the game ini only when the screen commits
-// (0x10092a0), and a discard drops them.
+// the slot values in the vector. Each tab is a model (pkp_options_model.h) that holds its values (cur / orig) and its rows; changes reach
+// Settings and the game ini only when the screen commits (0x10092a0), and a discard drops them.
 // Long lists and decimals are sliders whose numeric text is replaced by the row's own (hook after 0x710100f0a0's text call).
 // Hooks are the sites listed in recomp/games/pkp/main.sites.
 // The files it is split into: pkp_options_internal.h.
 #include "ui/pkp_options.h"
-#include "ui/pkp_options_internal.h"
+#include "ui/pkp_options_model.h"
 #include "core/pkp_guest.h"
 #include "core/pkp_layout.h"
 #include "core/pkp_settings.h"
@@ -31,48 +31,14 @@
 #include <string>
 #include <vector>
 
-#include "nxrt/extras.h"
 #include "nxrt/hooks.h"
 #include "nxrt/log.h"
 #include "nxrt/memory.h"
-#include "pad_choices.h"
 #include "play_game.h"
 #include "play_types.h"
 
 namespace nxrt::games::pkp {
 namespace options_detail {
-
-// The Mouse mode key (the Joy-Con 2 mouse mode, pkp_play.cpp): its binding in play, any key, mouse button or wheel notch. The row shows the
-// key; moving it either way starts a capture (play mode's rebind capture, GameHost::begin_capture) and the next input becomes the key, saved
-// at once (Escape cancels). The slider sits in the middle of a wide range, so every left/right press or click moves it and starts a capture
-// (with 0..1 it stuck at the end after one change and the next press did nothing). The new key replaces any other play binding of that input; an all-context binding of it still works elsewhere.
-namespace {
-
-play::GameHost* g_host = nullptr;
-bool g_mm_capture = false;     // waiting for the key
-bool g_mm_redraw = false;      // the row's text changed outside a value change
-std::string g_mm_shown;        // the key just picked, until play::apply_settings reaches current_settings (next frame)
-
-std::string mouse_mode_key_name(const S& s) {
-    std::string out;
-    for (const play::Binding& b : s.bindings)
-        if (b.act == play::Act::MouseMode && (b.ctx == play::Ctx::Play || b.ctx == play::Ctx::All))
-            out += (out.empty() ? "" : ", ") + play::input_name(b.in);
-    return out.empty() ? "None" : out;
-}
-void set_mouse_mode_key(S& s, const play::InputId& in) {
-    std::erase_if(s.bindings, [&](const play::Binding& b) { return b.act == play::Act::MouseMode || (b.in == in && b.ctx == play::Ctx::Play); });
-    s.bindings.push_back(play::Binding{in, play::Ctx::Play, play::Act::MouseMode, play::Trig::Press, 0});
-}
-
-}  // namespace
-
-const char* mouse_mode_text(int, char* out, size_t n) {
-    if (g_mm_capture) return "Press the new key (Esc: cancel)";
-    std::snprintf(out, n, "%s", g_mm_shown.empty() ? mouse_mode_key_name(play::current_settings()).c_str() : g_mm_shown.c_str());
-    return out;
-}
-int mouse_mode_max() { return 2 * kMmMid; }
 
 namespace {
 
@@ -120,31 +86,31 @@ constexpr uint32_t kIconOn = 0x88, kIconOff = 0x87;
 struct Tab {
     const char* title;      // nullptr: the game's own title
     uint8_t group;          // record +0x12
-    const Row* rows;
-    int count;
+    TabModel* model;        // nullptr: none of our rows
 };
 
-constexpr Tab tab(const char* title, uint8_t group, RowList r) { return Tab{title, group, r.rows, r.count}; }
+StaticTab g_sound{kSoundRows, &refresh_audio_devices}, g_display{kDisplayRows}, g_performance{kPerformanceRows}, g_graphics{kGraphicsRows},
+    g_picture{kPictureRows}, g_mouse{kMouseRows}, g_gameplay{kGameplayRows}, g_online{kOnlineRows};
 
-Tab kTabs[] = {
-    {nullptr, 1, nullptr, 0},   // Game
-    {nullptr, 2, nullptr, 0},   // Camera
-    tab(nullptr, 3, kSoundRows),
-    tab("Online", 13, kOnlineRows),   // first of ours: the launcher's online presence, easy to find (group 13: the next free one)
-    tab("Display", 4, kDisplayRows),
-    tab("Performance", 5, kPerformanceRows),
-    tab("Graphics", 6, kGraphicsRows),
-    tab("Picture", 7, kPictureRows),
-    tab("Mouse", 8, kMouseRows),
-    tab("Controller", 9, kControllerRows),
-    tab("Gameplay", 10, kGameplayRows),
-    tab("Time", 11, kTimeRows),
-    {"Events", 12, g_event_rows, 1},   // the count follows the event file (load_events)
+const Tab kTabs[] = {
+    {nullptr, 1, nullptr},   // Game
+    {nullptr, 2, nullptr},   // Camera
+    {nullptr, 3, &g_sound},
+    {"Online", 16, &g_online},
+    {"Display", 4, &g_display},
+    {"Performance", 5, &g_performance},
+    {"Graphics", 6, &g_graphics},
+    {"Picture", 7, &g_picture},
+    {"Mouse", 8, &g_mouse},
+    {"Controller", 9, &controller_tab()},
+    {"Gameplay", 10, &g_gameplay},
+    {"Time", 11, &time_tab()},
+    {"Events", 12, &events_tab()},
+    {"Mods", 14, &mods_tab()},   // group 13 is the game's own (Notes), so 14
+    {"Items", 15, &items_tab()},
 };
 constexpr int kTabCount = static_cast<int>(std::size(kTabs));
 constexpr int kGameTabs = 3;
-// The pad rows end the Controller tab; the Gameplay, Time and Events tabs follow it (pad_sync_last checks the tab is the right one).
-constexpr int kControllerTab = kTabCount - 4, kTimeTab = kTabCount - 2, kEventsTab = kTabCount - 1;
 // The bar has 16 cells (kFirstCell) and its layout table (hook_bar_state) has 16 entries: one more tab needs nothing else.
 static_assert(kTabCount <= 16, "the tab bar has 16 cells");
 
@@ -155,51 +121,8 @@ struct State {
     uint64_t child = 0;
     bool active = false, bar_extended = false;
     int tab = 0;
-    int cur[kTabCount][kSlots] = {}, orig[kTabCount][kSlots] = {};
     uint8_t* rec[kSlots] = {};
-    int pad_sel = 0;                                              // the controller button the pad rows show (a PadSrc)
-    int pad_cur[play::kPadSrcCount] = {}, pad_orig[play::kPadSrcCount] = {};   // per button: its choice index in play::kPadChoiceNames
-    int pad_last[2] = {kPadMid, kPadMid};                         // where the two pad sliders were last seen: a move is the step from here
 } g;
-}  // namespace
-
-// The pad rows' text and range (declared in pkp_options_internal.h, used by the Controller tab's rows).
-int pad_cycle_max() { return 2 * kPadMid; }
-const char* pad_button_text(int, char* out, size_t n) {
-    std::snprintf(out, n, "%s", play::kPadSrcLabels[g.pad_sel]);
-    return out;
-}
-const char* pad_press_text(int, char* out, size_t n) {
-    const int c = g.pad_cur[g.pad_sel];
-    std::snprintf(out, n, "%s", c < play::kPadChoiceCount ? play::kPadChoiceNames[c] : play::kPadCustomLabel);
-    return out;
-}
-
-namespace {
-
-bool is_pad_row(const Row& r) { return r.text == &pad_button_text || r.text == &pad_press_text; }
-
-// A pad slider went to `value`: the step from where it was is a step through the buttons (row 0) or through the choices of the shown
-// button (row 1). The "Custom" entry is a mask only the file can make: it is offered while the file holds one, never written back.
-void pad_row_moved(int row, int value) {
-    const int delta = value - g.pad_last[row];
-    g.pad_last[row] = value;
-    const auto wrap = [](int v, int n) { return ((v % n) + n) % n; };
-    if (row == 0) {
-        g.pad_sel = wrap(g.pad_sel + delta, play::kPadSrcCount);
-    } else {
-        int& c = g.pad_cur[g.pad_sel];
-        c = wrap(c + delta, g.pad_orig[g.pad_sel] == play::kPadChoiceCount ? play::kPadChoiceCount + 1 : play::kPadChoiceCount);
-    }
-}
-
-// The sliders' positions in the value vector are the screen's own: after the values were reset, the next move starts from there.
-void pad_sync_last() {
-    const Tab& t = kTabs[kControllerTab];
-    if (t.rows != kControllerRows.rows) return;            // the tab list changed and this is not the Controller tab any more
-    g.pad_last[0] = g.cur[kControllerTab][t.count - 2];
-    g.pad_last[1] = g.cur[kControllerTab][t.count - 1];
-}
 
 using guest::rd;
 using guest::wr;
@@ -209,68 +132,32 @@ using guest::call;
 void set_text(::Ctx* c, uint64_t widget, uint32_t slot, const char* s) { text::set_string(c, g.base, widget, slot, s); }
 
 int row_slot(uint32_t id) { return id >= kFirstId && id < kFirstId + kDirtySlot ? static_cast<int>(id - kFirstId) : -1; }
-const Row* row_at(int tab, int slot) { return slot >= 0 && slot < kTabs[tab].count ? &kTabs[tab].rows[slot] : nullptr; }
-const Row* shown_row(uint32_t id) { return g.active ? row_at(g.tab, row_slot(id)) : nullptr; }
-
-int row_hi(const Row& r) { return r.choices ? r.choices - 1 : r.max ? r.max() : r.hi; }
-
-const char* value_text(const Row& r, int v, char* out, size_t n) {
-    if (r.text) return r.text(v, out, n);
-    if (r.list) return r.list[std::clamp(v - r.lo, 0, r.hi - r.lo)];
-    if (r.zero && v == r.lo) return r.zero;
-    std::snprintf(out, n, r.fmt, r.base + v * r.step);
-    return out;
+int row_count(int tab) { return kTabs[tab].model ? kTabs[tab].model->count() : 0; }
+// The shown tab's model when the id is one of its rows, else nullptr; *row is the row.
+TabModel* shown(uint32_t id, int* row) {
+    *row = row_slot(id);
+    return g.active && *row >= 0 && *row < row_count(g.tab) ? kTabs[g.tab].model : nullptr;
 }
 
-// ---- a row's value: a play-mode setting (Row::get, Row::set) or a [pkp] key (Row::key) -------------------------------------------------
+constexpr int kNoValues[kSlots] = {};
+const int* cur_of(int tab) { return kTabs[tab].model ? kTabs[tab].model->cur : kNoValues; }
+const int* orig_of(int tab) { return kTabs[tab].model ? kTabs[tab].model->orig : kNoValues; }
 
-bool is_key_row(const Row& r) { return r.key != settings::Key::Count; }
-int key_position(const Row& r, double v) { return static_cast<int>(std::lround((v - settings::spec(r.key).lo) / r.unit)); }
-
-// The position of the value in force.
-int row_get(const Row& r, const S& s) {
-    if (!is_key_row(r)) return r.get(s);
-    switch (settings::spec(r.key).type) {
-        case settings::Type::Bool: return settings::get_bool(r.key) ? 1 : 0;
-        case settings::Type::Int: return key_position(r, static_cast<double>(settings::get_int(r.key)));
-        case settings::Type::Double: return key_position(r, settings::get_double(r.key));
-        case settings::Type::String: break;   // no row kind (key_row)
-    }
-    return 0;
-}
-
-// The position of the default (the record's default value).
-int row_default(const Row& r, const S& defaults) {
-    if (!is_key_row(r)) return r.get(defaults);
-    const settings::Spec& sp = settings::spec(r.key);
-    return sp.type == settings::Type::Bool ? (sp.def != 0 ? 1 : 0) : key_position(r, sp.def);
-}
-
-// A [pkp] row's position, saved: the game ini, and the getters at once.
-void save_key(const Row& r, int pos) {
-    const settings::Spec& sp = settings::spec(r.key);
-    switch (sp.type) {
-        case settings::Type::Bool: settings::set_bool(r.key, pos != 0); break;
-        case settings::Type::Int: settings::set_int(r.key, std::llround(sp.lo + pos * r.unit)); break;
-        case settings::Type::Double: settings::set_double(r.key, sp.lo + pos * r.unit); break;
-        case settings::Type::String: break;
-    }
-}
-
-bool has_changes(int skip_tab) {
+// Changes the vector does not hold: every other tab's, and the shown tab's rows that are not on screen.
+bool has_changes(int shown_tab) {
     for (int t = 0; t < kTabCount; ++t)
-        if (t != skip_tab)
-            for (int s = 0; s < kTabs[t].count; ++s)
-                if (g.cur[t][s] != g.orig[t][s]) return true;
+        if (const TabModel* m = kTabs[t].model)
+            if (t == shown_tab ? m->hidden_changes() : m->changed()) return true;
     return false;
 }
 
 void write_records(int tab) {
-    static const S defaults = play::default_settings();
+    const TabModel* m = kTabs[tab].model;
     for (int slot = 0; slot < kSlots; ++slot) {
         uint8_t* r = g.rec[slot];
         if (!r) continue;
-        const Row* row = slot == kDirtySlot ? nullptr : row_at(tab, slot);
+        const bool row = slot != kDirtySlot && slot < row_count(tab);
+        const Shape sh = row ? m->shape(slot) : Shape{};
         const uint16_t text = static_cast<uint16_t>(kCustomText + slot);
         std::memcpy(r, &text, 2);
         std::memcpy(r + 2, &text, 2);
@@ -279,13 +166,13 @@ void write_records(int tab) {
         r[0x16] = 3;                                 // as every other row
         r[0x15] = static_cast<uint8_t>(kFirstOrder + slot);   // a nonzero order is what makes the row exist
         r[0x12] = row ? kTabs[tab].group : kNoGroup;
-        r[4] = row && !row->choices ? 2 : 1;
+        r[4] = row && !sh.choices ? 2 : 1;
         r[6] = 1;                                    // the dirty scan skips rows with 0 here
         r[5] = r[7] = 0;
         if (!row) continue;
-        r[5] = static_cast<uint8_t>(std::clamp(row_default(*row, defaults), static_cast<int>(row->lo), row_hi(*row)));
-        r[6] = static_cast<uint8_t>(row->choices ? row->choices - 1 : row_hi(*row));
-        r[7] = row->lo;
+        r[5] = static_cast<uint8_t>(std::clamp(m->def(slot), sh.lo, sh.hi));
+        r[6] = static_cast<uint8_t>(sh.hi);          // a choice: its value count - 1
+        r[7] = static_cast<uint8_t>(sh.lo);
     }
 }
 
@@ -299,40 +186,19 @@ template <class F> void each_slot_element(F&& f) {
 }
 
 void vector_to_store() {
-    each_slot_element([](int slot, uint64_t e) { if (slot != kDirtySlot) g.cur[g.tab][slot] = rd<int>(e + 4); });
+    TabModel* m = kTabs[g.tab].model;
+    if (!m) return;
+    each_slot_element([m](int slot, uint64_t e) { if (slot != kDirtySlot) m->cur[slot] = rd<int>(e + 4); });
 }
 
 void store_to_vector() {
     const bool other_tabs = has_changes(g.tab);
-    each_slot_element([other_tabs](int slot, uint64_t e) {
-        wr<int>(e + 4, slot == kDirtySlot ? 0 : g.cur[g.tab][slot]);
-        wr<int>(e + 8, slot == kDirtySlot ? (other_tabs ? 1 : 0) : g.orig[g.tab][slot]);
+    const int *cur = cur_of(g.tab), *orig = orig_of(g.tab);
+    each_slot_element([other_tabs, cur, orig](int slot, uint64_t e) {
+        wr<int>(e + 4, slot == kDirtySlot ? 0 : cur[slot]);
+        wr<int>(e + 8, slot == kDirtySlot ? (other_tabs ? 1 : 0) : orig[slot]);
     });
     if (other_tabs) wr<uint8_t>(g.child + kDirty, 1);
-}
-
-// The changed rows of play-mode settings into s; true when there is one.
-bool build_settings(S& s) {
-    bool changed = false;
-    for (int t = 0; t < kTabCount; ++t)
-        for (int i = 0; i < kTabs[t].count; ++i)
-            if (g.cur[t][i] != g.orig[t][i] && !is_key_row(kTabs[t].rows[i])) {
-                kTabs[t].rows[i].set(s, g.cur[t][i]);
-                changed = true;
-            }
-    for (int i = 0; i < play::kPadSrcCount; ++i)
-        if (g.pad_cur[i] != g.pad_orig[i] && g.pad_cur[i] < play::kPadChoiceCount) {
-            s.pad.remap[i] = play::pad_choice_value(g.pad_cur[i]);
-            changed = true;
-        }
-    return changed;
-}
-
-// The changed rows of [pkp] keys, saved.
-void save_key_rows() {
-    for (int t = 0; t < kTabCount; ++t)
-        for (int i = 0; i < kTabs[t].count; ++i)
-            if (g.cur[t][i] != g.orig[t][i] && is_key_row(kTabs[t].rows[i])) save_key(kTabs[t].rows[i], g.cur[t][i]);
 }
 
 // ---- hooks -------------------------------------------------------------------------------------------------------------------------
@@ -368,20 +234,9 @@ int hook_open(::Ctx* c, uint64_t, void*) {
     g.child = child;
     g.tab = std::clamp(rd<int>(child + kTabIndex), 0, kTabCount - 1);
     if (g.tab >= kGameTabs) wr<uint8_t>(child + kGroup, kTabs[g.tab].group);   // the game's table only knows its own three tabs
-    if (!returning) {
-        kTabs[kEventsTab].count = load_events();
-        refresh_audio_devices();
-        const S s = play::current_settings();
-        for (int t = 0; t < kTabCount; ++t)
-            for (int i = 0; i < kTabs[t].count; ++i)
-                g.cur[t][i] = g.orig[t][i] = std::clamp(row_get(kTabs[t].rows[i], s), static_cast<int>(kTabs[t].rows[i].lo), row_hi(kTabs[t].rows[i]));
-        g.pad_sel = 0;
-        for (int i = 0; i < play::kPadSrcCount; ++i) {
-            const int c = play::pad_choice_of(s.pad.remap[i]);
-            g.pad_cur[i] = g.pad_orig[i] = c < 0 ? play::kPadChoiceCount : c;
-        }
-        pad_sync_last();
-    }
+    if (!returning)
+        for (const Tab& t : kTabs)
+            if (t.model) t.model->open();
     write_records(g.tab);
     return 0;
 }
@@ -389,7 +244,7 @@ int hook_open(::Ctx* c, uint64_t, void*) {
 int hook_option(::Ctx* c, uint64_t, void*) {
     const uint32_t id = c->x[1] & 0xff;
     if (!g.active || id < kFirstId || id >= kFirstId + kSlots) return 0;
-    if (static_cast<uint32_t>(c->x[2]) == 1) wr<int>(c->x[3] + kItemValue, id == kFirstId + kDirtySlot ? 0 : g.cur[g.tab][id - kFirstId]);
+    if (static_cast<uint32_t>(c->x[2]) == 1) wr<int>(c->x[3] + kItemValue, id == kFirstId + kDirtySlot ? 0 : cur_of(g.tab)[id - kFirstId]);
     return 1;                                        // mode 2 and 3: hook_commit applies every tab at once
 }
 
@@ -397,49 +252,56 @@ int hook_commit(::Ctx* c, uint64_t, void*) {
     if (!g.active || c->x[0] != g.child) return 0;
     vector_to_store();
     if (c->x[1] & 1) {
-        if (std::memcmp(g.cur[kTimeTab], g.orig[kTimeTab], 6 * sizeof(int)) != 0) apply_time_tab(g.cur[kTimeTab]);
-        S s = play::current_settings();
-        if (build_settings(s)) play::apply_settings(s);   // main thread, next frame; also writes controls.ini
-        save_key_rows();                             // the game ini, now
-        std::memcpy(g.orig, g.cur, sizeof g.orig);
-        std::memcpy(g.pad_orig, g.pad_cur, sizeof g.pad_orig);
+        Apply a{play::current_settings()};
+        for (const Tab& t : kTabs)
+            if (t.model) t.model->commit(a);
+        if (a.changed) play::apply_settings(a.s);   // main thread, next frame; also writes controls.ini
+        for (const Tab& t : kTabs)
+            if (t.model) t.model->accept();
     } else if (rd<int>(g.child + 0x354) != 0) {      // "discard" (the game's other call with 0 only redraws)
-        std::memcpy(g.cur, g.orig, sizeof g.cur);
-        std::memcpy(g.pad_cur, g.pad_orig, sizeof g.pad_cur);
-        pad_sync_last();
-        extras::set_picture_live(play::current_settings().extras.picture);   // the colour rows preview live
+        for (const Tab& t : kTabs)
+            if (t.model) t.model->revert();
     }
     store_to_vector();
     return 0;                                        // the game commits its own rows
 }
 
+// Rewrites the slot records for the shown tab's rows and swaps its values into the vector; the game's row list is then built again.
+void show_tab(::Ctx* c) {
+    write_records(g.tab);
+    store_to_vector();
+    call(c, g.base + kRebuildList, g.child);
+    call(c, g.base + kRedraw, g.child, 1, 1, 0);
+}
+
 int hook_store(::Ctx* c, uint64_t, void*) {
-    const Row* r = c->x[0] == g.child ? shown_row(c->x[1] & 0xff) : nullptr;
-    if (r && g.tab == kEventsTab) {                  // an event was picked: go there now, and keep the row where it was (nothing to save)
-        const int slot = static_cast<int>(c->x[1] & 0xff) - kFirstId;
-        go_to_event(slot, g.cur[kTimeTab], g.orig[kTimeTab]);
-        for (int i = 0; i < kSlots; ++i) g.cur[g.tab][i] = g.orig[g.tab][i] = i == slot ? 1 : 0;   // exactly one event is chosen
-        each_slot_element([slot](int s, uint64_t e) { wr<int>(e + 4, s == slot ? 1 : 0); wr<int>(e + 8, s == slot ? 1 : 0); });
-        return 1;
+    int row = -1;
+    TabModel* m = c->x[0] == g.child ? shown(c->x[1] & 0xff, &row) : nullptr;
+    if (!m) return 0;
+    const int pos = static_cast<int>(c->x[2]);
+    switch (m->shape(row).use) {
+        case Use::Value: return 0;
+        case Use::Live:
+            m->cur[row] = pos;
+            m->preview(row, pos);
+            return 0;
+        case Use::Capture:                           // wait for the new key (pkp_options_capture.h)
+            capture::begin(*m->capture(row));
+            return 0;
+        case Use::Press:                             // the model set its values: the vector shows them, nothing to save
+            m->press(row, pos);
+            each_slot_element([m](int s, uint64_t e) {
+                wr<int>(e + 4, s == kDirtySlot ? 0 : m->cur[s]);
+                wr<int>(e + 8, s == kDirtySlot ? 0 : m->orig[s]);
+            });
+            return 1;
+        case Use::ReadOnly: return 1;
+        case Use::Rows:                              // the store's callers move the cursor next (0x1008728), as a tab change does last
+            vector_to_store();
+            m->pick(row, pos);
+            show_tab(c);
+            return 1;
     }
-    if (r && r->text == &mouse_mode_text) {          // the Mouse Mode Key row moved: wait for the new key
-        if (g_host && !g_mm_capture) {
-            g_host->begin_capture();
-            g_mm_capture = true;
-            g_mm_redraw = true;
-            NXLOG_I(kTag, "options: Mouse Mode Key: waiting for a key");
-        }
-        return 0;
-    }
-    if (r && is_pad_row(*r)) {                       // a pad slider moved: a step through its list (the rows draw their own text)
-        pad_row_moved(r->text == &pad_button_text ? 0 : 1, static_cast<int>(c->x[2]));
-        return 0;
-    }
-    if (!r || !r->live) return 0;
-    g.cur[g.tab][(c->x[1] & 0xff) - kFirstId] = static_cast<int>(c->x[2]);
-    S s = play::current_settings();
-    build_settings(s);
-    extras::set_picture_live(s.extras.picture);
     return 0;
 }
 
@@ -454,10 +316,7 @@ int change_tab(::Ctx* c, int dir) {
     g.tab = (g.tab + dir + kTabCount) % kTabCount;
     wr<int>(child + kTabIndex, g.tab);
     wr<uint8_t>(child + kGroup, kTabs[g.tab].group);
-    write_records(g.tab);
-    store_to_vector();
-    call(c, g.base + kRebuildList, child);
-    call(c, g.base + kRedraw, child, 1, 1, 0);
+    show_tab(c);
     call(c, g.base + kCursor, child, 1);
     c->x[0] = 1;
     return 1;
@@ -514,34 +373,27 @@ int hook_bar_title(::Ctx* c, uint64_t, void*) {
 }
 
 int hook_value_names(::Ctx* c, uint64_t, void*) {
-    const Row* r = shown_row(c->x[2] & 0xff);
-    if (!r) return 0;
-    for (int i = 0; i < r->choices; ++i) set_text(c, c->x[0], kFirstValueSlot + i, r->names[i]);
+    int row = -1;
+    const TabModel* m = shown(c->x[2] & 0xff, &row);
+    if (!m) return 0;
+    char buf[128];
+    for (int i = 0; i < m->shape(row).choices; ++i) set_text(c, c->x[0], kFirstValueSlot + i, m->value_text(row, i, buf, sizeof buf));
     return 1;
 }
 
 uint64_t text_pane(::Ctx* c, uint64_t widget, uint32_t slot);
 
-// The slider's text box is sized for a short number: room for the longest value name.
-void widen_slider_text(::Ctx* c, uint64_t row) {
-    if (const uint64_t pane = text_pane(c, row, kSliderSlot)) {
-        if (rd<int16_t>(pane + kPaneWidth) < kSliderTextWidth) wr<int16_t>(pane + kPaneWidth, kSliderTextWidth);
-    }
-}
-
 void hook_row_drawn(::Ctx* c, uint64_t, void*) {
-    const Row* r = shown_row(rd<uint8_t>(c->x[19] + kRowId));
-    if (!r) return;
-    set_text(c, c->x[19], kLabelSlot, r->label);
-    if (r->text == &mouse_mode_text && g_mm_redraw) {   // the capture started or ended: the key text, not the slider's number
-        g_mm_redraw = false;
-        widen_slider_text(c, c->x[19]);
+    int row = -1;
+    const TabModel* m = shown(rd<uint8_t>(c->x[19] + kRowId), &row);
+    if (!m) return;
+    set_text(c, c->x[19], kLabelSlot, m->label(row));
+    if (m->shape(row).use == Use::Capture && capture::take_redraw(*m->capture(row))) {   // the capture started or ended: the key text, not the slider's number
+        if (const uint64_t pane = text_pane(c, c->x[19], kSliderSlot)) {
+            if (rd<int16_t>(pane + kPaneWidth) < kSliderTextWidth) wr<int16_t>(pane + kPaneWidth, kSliderTextWidth);
+        }
         char buf[128];
-        set_text(c, c->x[19], kSliderSlot, mouse_mode_text(0, buf, sizeof buf));
-    } else if (is_pad_row(*r)) {                        // the pad rows' text is the state, whichever row moved last
-        widen_slider_text(c, c->x[19]);
-        char buf[128];
-        set_text(c, c->x[19], kSliderSlot, r->text(0, buf, sizeof buf));
+        set_text(c, c->x[19], kSliderSlot, m->value_text(row, capture::kMid, buf, sizeof buf));
     }
 }
 
@@ -560,55 +412,38 @@ uint64_t text_pane(::Ctx* c, uint64_t widget, uint32_t slot) {
 }
 
 void hook_slider_text(::Ctx* c, uint64_t, void*) {
-    const Row* r = shown_row(rd<uint8_t>(c->x[19] + kRowId));
-    if (!r || r->choices) return;
-    widen_slider_text(c, c->x[19]);   // "Match Display" came out at half size
+    int row = -1;
+    const TabModel* m = shown(rd<uint8_t>(c->x[19] + kRowId), &row);
+    if (!m || m->shape(row).choices) return;
+    // The box is sized for a short number: "Match Display" came out at half size.
+    if (const uint64_t pane = text_pane(c, c->x[19], kSliderSlot)) {
+        if (rd<int16_t>(pane + kPaneWidth) < kSliderTextWidth) wr<int16_t>(pane + kPaneWidth, kSliderTextWidth);
+    }
     char buf[128];
-    set_text(c, c->x[19], kSliderSlot, value_text(*r, static_cast<int>(c->x[20]), buf, sizeof buf));
+    set_text(c, c->x[19], kSliderSlot, m->value_text(row, static_cast<int>(c->x[20]), buf, sizeof buf));
 }
 
 int hook_text_by_id(::Ctx* c, uint64_t, void*) {
     const uint32_t id = c->x[2] & 0xffff;
     if (id < kCustomText || id >= kCustomText + kDirtySlot) return 0;
-    const Row* r = g.active ? row_at(g.tab, static_cast<int>(id - kCustomText)) : nullptr;
-    if (!r) return 1;
-    char buf[256];
-    std::snprintf(buf, sizeof buf, "%s%s", r->desc, r->restart ? " Applies after a restart." : "");
+    const int row = static_cast<int>(id - kCustomText);
+    const TabModel* m = g.active && row < row_count(g.tab) ? kTabs[g.tab].model : nullptr;
+    if (!m) return 1;
+    char buf[512];
+    std::snprintf(buf, sizeof buf, "%s%s", m->desc(row), m->restart(row) ? " Applies after a restart." : "");
     set_text(c, c->x[0], static_cast<uint32_t>(c->x[1]), buf);
     return 1;
 }
 
-// frame boundary, main thread: the Mouse Mode Key row's key capture
-void frame(bool, double, play::GameFrame*) {
-    if (!g_mm_shown.empty() && !g_mm_capture && mouse_mode_key_name(play::current_settings()) == g_mm_shown) g_mm_shown.clear();
-    if (!g_mm_capture || !g_host) return;
-    play::InputId in;
-    if (g_host->capture_result(&in)) {
-        if (g_host->reserved_key(in)) {              // F1 opens the settings page: keep the old key
-            NXLOG_I(kTag, "options: Mouse Mode Key: %s opens the settings page, the key stays", play::input_name(in).c_str());
-            g_mm_capture = false;
-            g_mm_redraw = true;
-            return;
-        }
-        S s = play::current_settings();
-        set_mouse_mode_key(s, in);
-        g_mm_shown = play::input_name(in);
-        play::apply_settings(s);                     // main thread, next frame; also writes controls.ini
-        NXLOG_I(kTag, "options: Mouse Mode Key = %s", play::input_name(in).c_str());
-    } else if (g_host->capturing()) {
-        if (g.active) return;
-        g_host->cancel_capture();                    // the screen closed while waiting
-    }
-    g_mm_capture = false;
-    g_mm_redraw = true;
-}
+// frame boundary, main thread: the key capture of capture rows
+void frame(bool, double, play::GameFrame*) { capture::frame(g.active); }
 
 void install(const FeatureInstall& in) {
     in.hooks.add_entry(in.base + kClockText, &hook_clock_text);   // clock_format works without the Settings tabs too
     if (!settings::get_bool(settings::Key::OptionsMenu)) return;
     const uint64_t base = in.base;
     g.base = base;
-    g_host = in.host;
+    capture::set_host(in.host);
     in.hooks.add_entry(base + kOpen, &hook_open);
     in.hooks.add_entry(base + kOption, &hook_option);
     in.hooks.add_entry(base + kValueNames, &hook_value_names);

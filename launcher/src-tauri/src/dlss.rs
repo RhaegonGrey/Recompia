@@ -35,13 +35,26 @@ fn tools(tools_dir: &Path) -> (PathBuf, PathBuf) {
 }
 
 pub fn status(game_dir: &Path, tools_dir: &Path) -> Status {
-    let (py, script) = tools(tools_dir);
     let dir = target_dir(game_dir);
-    Status { available: py.is_file() && script.is_file(), present: dir.join("nvngx_dlss.dll").is_file(), dir: crate::dump::fwd(&dir) }
+    // Windows only: the DLSS upscaler is off in the Linux and macOS builds (its SDK is Windows only, and the runtime turns it off
+    // there), so there is nothing to download.
+    #[cfg(not(windows))]
+    {
+        return Status { available: false, present: dir.join("nvngx_dlss.dll").is_file(), dir: crate::dump::fwd(&dir) };
+    }
+    #[cfg(windows)]
+    {
+        let (py, script) = tools(tools_dir);
+        Status { available: py.is_file() && script.is_file(), present: dir.join("nvngx_dlss.dll").is_file(), dir: crate::dump::fwd(&dir) }
+    }
 }
 
 /// Runs the download. Progress lines are `@progress download <done> <total> <text>`, a failure is `@error <text>`.
 pub fn fetch(game_dir: &Path, tools_dir: &Path, mut report: impl FnMut(Progress)) -> Result<(), String> {
+    // Windows only: status() reports it unavailable on Linux and macOS, so there is nothing to fetch.
+    if cfg!(not(windows)) {
+        return Err("DLSS is not available on this system: its SDK is Windows only.".into());
+    }
     let (py, script) = tools(tools_dir);
     if !script.is_file() {
         return Err("This package has no DLSS download tool. Extract the release zip again so tools/ is complete.".into());
@@ -55,7 +68,7 @@ pub fn fetch(game_dir: &Path, tools_dir: &Path, mut report: impl FnMut(Progress)
         .into());
     }
     let mut cmd = crate::host::command(&py);
-    cmd.arg("-I").arg(&script).arg("--dir").arg(target_dir(game_dir));
+    cmd.arg("-I").arg("-B").arg(&script).arg("--dir").arg(target_dir(game_dir));
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;

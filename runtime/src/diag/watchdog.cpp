@@ -22,6 +22,7 @@
 #include "nxrt/gauge.h"
 #include "nxrt/dispatch.h"
 #include "nxrt/log.h"
+#include "nxrt/module.h"
 #include "nxrt/symbols.h"
 #include "stackwalk.h"
 
@@ -38,13 +39,32 @@ std::atomic<bool> g_running{false};
 
 enum class Status : uint8_t { NoSuspend, NoContext, Ok };
 
+// Every byte of [addr, addr+n) is committed and readable: the guest frame walk below runs on a thread that may be running,
+// so it must never fault (a bad frame pointer in a stack is normal).
+bool readable(uint64_t addr, uint64_t n) {
+    if (n == 0) return true;
+    uint64_t p = addr;
+    const uint64_t end = addr + n;
+    while (p < end) {
+        MEMORY_BASIC_INFORMATION mbi{};
+        if (VirtualQuery(reinterpret_cast<LPCVOID>(p), &mbi, sizeof mbi) == 0) return false;
+        if (mbi.State != MEM_COMMIT || (mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD)) || !(mbi.Protect & (PAGE_READONLY | PAGE_READWRITE | PAGE_WRITECOPY | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY)))
+            return false;
+        const uint64_t next = reinterpret_cast<uint64_t>(mbi.BaseAddress) + mbi.RegionSize;
+        if (next <= p) return false;
+        p = next;
+    }
+    return true;
+}
+
 // One registered thread as read by the dump. Phase one (suspend, read, resume) only writes into storage that was sized
 // before the first SuspendThread; formatting happens after every thread is running again.
 struct ThreadDump {
     ThreadRecord rec;                    // copied from the registry before any suspension
     Status status = Status::NoSuspend;
     bool have_guest = false;
-    uint64_t guest_lr = 0, guest_sp = 0, guest_fp = 0;
+    uint64_t guest_lr = 0, guest_sp = 0, guest_fp = 0, guest_fn = 0;   // fn: entry of the lifted function entered most recently
+    const char* guest_import = nullptr;   // host import running on the thread, if any (Ctx::in_import)
     uint64_t cpu_user_ms = 0, cpu_kernel_ms = 0;   // CPU time the thread has used so far: two dumps tell a busy thread from a waiting one
     size_t nframes = 0;
     uint64_t frames[kMaxFrames] = {};
@@ -88,6 +108,17 @@ void collect_threads(std::vector<ThreadDump>& out) {
         }
         if (h == nullptr || SuspendThread(h) == static_cast<DWORD>(-1)) {
             d.status = Status::NoSuspend;
+            // POSIX has no SuspendThread (docs/macos-port.md D8): no host stack, but the guest Ctx the thread registered is
+            // readable, and a thread blocked in an SVC left its registers there, which is where it is waiting.
+            if (d.rec.ctx) {
+                d.guest_lr = lr(d.rec.ctx);
+                d.guest_sp = sp(d.rec.ctx);
+                d.guest_fp = fp(d.rec.ctx);
+                d.guest_fn = d.rec.ctx->fn;
+                if (d.rec.ctx->in_import && readable(reinterpret_cast<uint64_t>(d.rec.ctx->in_import), 1))
+                    d.guest_import = d.rec.ctx->in_import;
+                d.have_guest = true;
+            }
             continue;  // not suspended, nothing to resume
         }
         CONTEXT tc{};
@@ -134,7 +165,41 @@ std::string format_threads(const std::vector<ThreadDump>& threads) {
         out += '\n';
         appendf(out, "  cpu: user %llu ms, kernel %llu ms\n", static_cast<unsigned long long>(d.cpu_user_ms), static_cast<unsigned long long>(d.cpu_kernel_ms));
         if (d.status == Status::NoSuspend) {
-            out += "  (could not suspend)\n";
+            if (d.have_guest) {
+                appendf(out, "  guest: fn=%s lr=%016llx sp=%016llx fp=%016llx\n",
+                        d.guest_fn ? module_describe(d.guest_fn).c_str() : "(none)", static_cast<unsigned long long>(d.guest_lr),
+                        static_cast<unsigned long long>(d.guest_sp), static_cast<unsigned long long>(d.guest_fp));
+                if (d.guest_import) {
+                    out += "  in host import: ";
+                    out += d.guest_import;
+                    out += '\n';
+                }
+                // The return addresses the guest stack still holds (x29 chain), the same walk the crash report does. A thread
+                // that is running can move its stack under this, so every read is checked first.
+                std::string chain;
+                uint64_t last = 0;
+                uint64_t fp = d.guest_fp;
+                for (int i = 0; i < 24 && fp && readable(fp, 16); ++i) {
+                    const uint64_t f = fp;
+                    const uint64_t next = *reinterpret_cast<const uint64_t*>(static_cast<uintptr_t>(f));
+                    const uint64_t ret = *reinterpret_cast<const uint64_t*>(static_cast<uintptr_t>(f) + 8);
+                    if (ret && ret != last) {
+                        if (!chain.empty()) chain += " <- ";
+                        chain += module_describe(ret);   // guest address: module + offset (symbol+0x..)
+                        last = ret;
+                    }
+                    if (next <= f) break;
+                    fp = next;
+                }
+                if (!chain.empty()) {
+                    out += "  guest call stack: ";
+                    out += chain;
+                    out += '\n';
+                }
+                out += "  (no host stack: this platform cannot suspend another thread)\n";
+            } else {
+                out += "  (could not suspend)\n";
+            }
             continue;
         }
         if (d.status == Status::NoContext) {

@@ -15,6 +15,7 @@ struct GuestTexInfo {
     uint32_t width = 0, height = 0, levels = 0, layers = 0;
     bool bc7 = false;             // BPTC_UNORM or BPTC_UNORM_SRGB, block-linear, with storage
     bool srgb = false;
+    uint32_t format = 0;          // the NVN format value (NVN_FORMAT_*), for logs and for picking the patcher
 };
 
 // True when `guest` (an address in the game's memory) holds the game's NVNtexture object of a live texture.

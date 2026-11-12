@@ -12,11 +12,12 @@
 //! `corpus/unique.tsv`, rewritten per chunk) into `shader_cache/stage`, and a chunk counts only once its `.spv` files are
 //! moved into `spirv/` and its rows appended to `spirv/results.tsv`. A block with a row there is never translated again.
 //! `shader_cache/setup.json` records what is done. The tools run at below-normal priority.
-//! On Linux the extractor runs with the Linux Python and the translator (a Windows program) through Proton (host.rs).
+//! On Linux and macOS the tools run natively: the extractor with the host's Python, the translator as the host's own self-contained
+//! publish (host.rs).
 //! Compact storage (shader_archive.rs): when the cache has a shader archive, or a new setup asks for one (`Job::compact`), every chunk is
 //! moved into the archive as soon as it is committed, so the loose files never pile up. A cache of loose files stays loose until the
 //! player makes it smaller (main.rs compact_shaders).
-//! Its only crate-local imports are host.rs and shader_archive.rs, which have none, so `examples/shader_setup.rs` can build them alone.
+//! Its only crate-local imports are host.rs (with download.rs) and shader_archive.rs, so `examples/shader_setup.rs` can build them alone.
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -39,7 +40,8 @@ pub const RUNTIME_REL: &str = "shader_cache/runtime";
 /// Run-time blocks a translator fix changes whose old translation is in the shader archive (it cannot be deleted one by one there):
 /// one hash per line. translate_missing translates them again, as if they had no translation, and empties the list.
 const RETRANSLATE_REL: &str = "shader_cache/runtime/retranslate.txt";
-/// Blocks per translator run. Under Proton every run also starts Proton (a few seconds), so Linux runs fewer, larger chunks.
+/// Blocks per translator run. Windows runs more, smaller chunks so a pause or a crash loses less; the POSIX hosts run fewer, larger
+/// ones (a native process start is cheap, and each chunk re-reads the corpus index).
 const CHUNK: usize = if cfg!(windows) { 1000 } else { 5000 };
 /// Workers for the extractor. It maps each asset file into memory and decompresses it, so one worker per CPU thread can
 /// thrash a machine's memory and disk (issue #194: 15 workers on a hard drive); a few already saturate the disk. The
@@ -187,6 +189,13 @@ pub fn is_complete(game_dir: &Path) -> bool {
     m.complete && m.translator >= TRANSLATOR_REV && game_dir.join(SPIRV_REL).join("results.tsv").is_file()
 }
 
+/// Records a finished cache (the macOS setup translates it itself, outside shaders::run): `is_complete` then says so and
+/// Set up does not run again until the RomFS or the translator changes.
+pub fn mark_complete(game_dir: &Path, romfs: &str, blocks: usize) -> Result<(), String> {
+    let m = Marker { romfs: romfs.to_string(), extracted: true, blocks, complete: true, translator: TRANSLATOR_REV, storage: "loose".into() };
+    write_marker(game_dir, &m)
+}
+
 /// True when the cache was finished by an older translator that a later fix changes: Set up has to run once more.
 pub fn needs_retranslation(game_dir: &Path) -> bool {
     let m = read_marker(game_dir);
@@ -291,7 +300,7 @@ fn quiet(cmd: &mut Command, idle: bool) {
 
 fn python_has_lz4(py: &Path) -> bool {
     let mut c = crate::host::command(py);
-    c.args(["-I", "-c", "import lz4.block"]).stdout(Stdio::null()).stderr(Stdio::null());
+    c.args(["-I", "-B", "-c", "import lz4.block"]).stdout(Stdio::null()).stderr(Stdio::null());
     quiet(&mut c, false);
     c.status().map(|s| s.success()).unwrap_or(false)
 }
@@ -398,8 +407,7 @@ pub(crate) fn run_tool(mut cmd: Command, cancel: &AtomicBool, idle: bool, log: O
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {}
             Err(mpsc::RecvTimeoutError::Disconnected) => {
-                // stdout closed: the process is ending. Polled, so Pause and the time limit still apply while it does (Proton's
-                // wrapper waits for every wine process of the prefix)
+                // stdout closed: the process is ending. Polled, so Pause and the time limit still apply while it does
                 if let Some(st) = child.try_wait().map_err(|e| e.to_string())? {
                     if cancel.load(Ordering::SeqCst) {
                         say(&format!("stopped: {} (paused by the player)", name));
@@ -533,7 +541,7 @@ pub fn translate_missing(game_dir: &Path, tools_dir: &Path) -> Result<usize, Str
         let mut f: Vec<String> = r.split('\t').map(String::from).collect();
         for k in [11, 12] {
             if let Some(v) = f.get_mut(k) {
-                *v = crate::host::win_path(&runtime.join(&*v)).to_string_lossy().replace('\\', "/");
+                *v = runtime.join(&*v).to_string_lossy().replace('\\', "/");
             }
         }
         text.push_str(&f.join("\t"));
@@ -571,12 +579,12 @@ pub fn warm_up(game_dir: &Path, tools_dir: &Path, cancel: &AtomicBool) -> Result
     if let Some(install) = tools_dir.parent() {
         crate::host::sync_runtime_files(install, game_dir)?;
     }
-    let mut cmd = crate::host::windows_program(&game_dir.join("pkp.exe"))?;
-    cmd.current_dir(game_dir).arg("--headless").args(["--max-seconds", &WARMUP_SECONDS.to_string()]).arg("--log").arg(crate::host::win_path(&scratch.join("warmup.log")));
+    let mut cmd = std::process::Command::new(game_dir.join("pkp.exe"));
+    cmd.current_dir(game_dir).arg("--headless").args(["--max-seconds", &WARMUP_SECONDS.to_string()]).arg("--log").arg(scratch.join("warmup.log"));
     // environment variables win over pkp.ini
-    cmd.env("NXRT_FS_SAVE_DIR", crate::host::win_path(&scratch.join("save"))).env("NXRT_NVN_DUMP_MISSING", MISSING_REL).env("NXRT_AUDIO_SINK", "null");
+    cmd.env("NXRT_FS_SAVE_DIR", scratch.join("save")).env("NXRT_NVN_DUMP_MISSING", MISSING_REL).env("NXRT_AUDIO_SINK", "null");
     // it ends with exit code 124 when the time is up: any end is fine, a crash only means fewer blocks were collected. One
-    // still running 4 minutes later (a first Proton start also makes its prefix) is stopped.
+    // still running 4 minutes later (a first start also translates the first blocks) is stopped.
     if let Ok(false) = run_tool(cmd, cancel, false, None, Some(Duration::from_secs(WARMUP_SECONDS as u64 + 240)), |_| {}) {
         return Ok(None);
     }
@@ -640,7 +648,7 @@ pub fn run(job: &Job, tools: &Tools, cancel: &AtomicBool, mut report: impl FnMut
         report(p("extract", 0, 0, "Finding the game's shaders in your game files...".into()));
         let _ = fs::remove_file(corpus.join("unique.tsv"));
         let mut cmd = crate::host::command(&tools.python);
-        cmd.arg("-I").arg(&tools.extract).arg("--romfs").arg(&job.romfs).arg("--main").arg(&job.main).arg("--out").arg(&corpus);
+        cmd.arg("-I").arg("-B").arg(&tools.extract).arg("--romfs").arg(&job.romfs).arg("--main").arg(&job.main).arg("--out").arg(&corpus);
         if let Some(b) = &job.romfs_base {
             cmd.arg("--romfs-base").arg(b);
         }

@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Play mode: loading the settings, start and stop, the process exit and the public API (play.h).
 #include "play_state.h"
+#include "nxrt/key_state.h"
+#include "nxrt/screenshot.h"
 #include "nxrt/text.h"
 #include "nxrt/vi_sinks.h"
 
@@ -191,7 +193,8 @@ bool start(const StartOptions& opt) {
     hid::set_vibration_sink(&vib_sink, nullptr);
     tt::set_mouse_sink(&input::mouse_delta_add);
     tt::set_key_sink(&key_sink);
-    if (st.renderer) tt::set_screenshot_provider(&screenshot_provider, nullptr);
+    key_state::set_name_lookup(&key_scancode_by_name);
+    if (st.renderer) screenshot::set_provider(&screenshot_provider, nullptr);
     if (st.renderer) tt::set_screenshot_flush(&gfx::wait_screenshot_writes);
     set_hdr_luminance_sink(&extras::hdr_note_layer_luminance);
     if (const std::string script = config_get_str("play", "selftest", ""); !script.empty()) {

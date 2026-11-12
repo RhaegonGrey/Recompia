@@ -17,6 +17,7 @@ void CmdState::begin_submit() {
     want_depth_ro = false;
     key_dummy_binding = 0;
     fs_tonemap = -1;
+    fs_stretch = -1;
 }
 // vkCmdBindIndexBuffer unless the same (buffer, offset, type) is already bound in this command buffer.
 static void bind_index_buffer(VkCommandBuffer cb, VkBuffer buf, VkDeviceSize off, VkIndexType type) {
@@ -409,6 +410,7 @@ static bool begin_draw(int mode, bool indexed, int index_type, VkPrimitiveTopolo
         const ShaderInfo* stages[6] = {vs, S.stage[kFragment], S.stage[kGeometry], tcs_now(), S.stage[kTessEval], nullptr};
         g_cmd.pl = prog_layout(stages);
         g_cmd.fs_tonemap = -1;
+        g_cmd.fs_stretch = -1;
     }
     if (g_trace_hooks) trace_note_fs();
     const ProgLayout* pl = g_cmd.pl;
@@ -423,19 +425,22 @@ static bool begin_draw(int mode, bool indexed, int index_type, VkPrimitiveTopolo
         g_cmd.want_depth_ro = samples_depth_target(*pl);
         prepare_textures(*pl);
         if (g_trace) trace_dump_raw(*pl);
-        // scene_upscale_for_draw acts only on a tone-map draw into a colour target and clears the override otherwise. Whether the
-        // fragment shader is that one is asked once per bound program (hdr_is_tonemap: a mutex and a map of hash strings), at the
-        // first such draw as before.
+        // tonemap_for_draw acts only on a tone-map draw into a colour target, scene_stretch_for_draw only on the game's scene stretch
+        // shader; every other draw clears the override. Whether the fragment shader is one of them is asked once per bound program
+        // (hdr_is_tonemap: a mutex and a map of hash strings), at its first draw into a colour target.
         const ShaderInfo* fs = S.stage[kFragment];
         const bool colour = fs && S.ncolor > 0 && S.color_tex[0];
         if (colour && g_cmd.fs_tonemap < 0) g_cmd.fs_tonemap = extras::hdr_is_tonemap(fs->spirv, fs->hash) ? 1 : 0;
-        if (colour && g_cmd.fs_tonemap > 0) scene_upscale_for_draw(*pl);
+        if (colour && g_cmd.fs_stretch < 0) g_cmd.fs_stretch = extras::is_scene_stretch(fs->hash) ? 1 : 0;
+        if (colour && g_cmd.fs_tonemap > 0) tonemap_for_draw(*pl);
+        else if (colour && g_cmd.fs_stretch > 0) scene_stretch_for_draw(*pl);
         else g_su.clear();
     }
     if (g_copies.fb_seen || (g_cmd.dirty & (kDesc | kPipe))) feedback_prepare(*pl);
     bool pass_ok;
     { RpScope rp_(kRpPass); pass_ok = ensure_pass(g_cmd.want_depth_ro, g_copies.fbl_want); }
     if (!pass_ok) { log_once(kOnceDrawNoTarget, "draw without a usable render target skipped"); return false; }
+    if (ui_skip_draw(vs)) return false;   // after the pass is begun, so its clears and loads still happen (nxrt/ui_layer.h)
     if (g_cmd.prog_writes || g_xfb.active) g_bar.pass_unsafe = true;
     const VkPrimitiveTopology topo = vk_topology(mode);
     if ((g_cmd.dirty & kPipe) || topo != g_cmd.pipe_topo || !g_cmd.pipe || g_pipe_fbl != (P.fbl != 0)) {

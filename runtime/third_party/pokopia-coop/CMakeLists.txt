@@ -6,4 +6,7 @@ add_library(pokopia_coop STATIC coop_ldn.c coop_vnet.c coop_mpnet.c coop_plat.c 
 target_include_directories(pokopia_coop PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 set_target_properties(pokopia_coop PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
 target_compile_definitions(pokopia_coop PRIVATE _CRT_SECURE_NO_WARNINGS WIN32_LEAN_AND_MEAN)
-target_link_libraries(pokopia_coop PUBLIC ws2_32 ole32 iphlpapi)   # ole32: network profiles, iphlpapi: addresses (coop_plat.c)
+if(WIN32)
+    target_link_libraries(pokopia_coop PUBLIC ws2_32 ole32 iphlpapi)   # ole32: network profiles, iphlpapi: addresses (coop_plat.c)
+endif()
+# macOS: coop_plat.c's POSIX branch uses BSD sockets and pthreads, which live in libSystem (docs/macos-port.md D6).

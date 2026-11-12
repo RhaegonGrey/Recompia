@@ -1,0 +1,27 @@
+/* Mods: one glass card a mod, under the Installed / Browse switch. */
+
+.mods-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--space-3) var(--space-5); }
+
+.mods-part { display: flex; flex-direction: column; gap: var(--space-4); min-width: 0; }
+.mods-part:empty { display: none; }
+.mods-part .banner { align-items: center; }
+.mods-pref { padding: var(--space-3) var(--space-4); }
+.mods-note { padding-inline: var(--space-2); font-size: var(--text-sm); }
+.mods-links { margin-top: var(--space-2); }
+.mods-groups button.chip[aria-pressed="true"] { background: var(--surface-3); color: var(--color-text); }
+
+.mod { display: flex; flex-direction: column; gap: var(--space-3); padding: var(--space-4) var(--space-5); }
+.mod-head { display: flex; align-items: flex-start; gap: var(--space-4); }
+.mod-name { display: flex; align-items: baseline; gap: var(--space-2); min-width: 0; font-size: var(--text-lg); font-weight: var(--weight-semi); }
+.mod-by { color: var(--color-text-2); font-size: var(--text-sm); overflow-wrap: anywhere; }
+.mod-desc { color: var(--color-text-2); font-size: var(--text-sm); }
+.mod-msg { align-items: flex-start; }
+.mod-settings { border-top: 1px solid var(--line); }
+.mod-settings .row-item { padding-inline: 0; }
+.mod-settings .row-label { overflow-wrap: anywhere; }
+.mod-actions .chip .icon { width: 14px; height: 14px; }
+
+/* the Details dialog of a Browse card: hub text, plain, may be long (the dialog scrolls) */
+.mod-long { white-space: pre-line; overflow-wrap: anywhere; }
+.mod-sub { font-size: var(--text-sm); font-weight: var(--weight-semi); }
+.mod-set-list { display: flex; flex-direction: column; gap: var(--space-1); margin: 0; padding-left: var(--space-5); color: var(--color-text-2); font-size: var(--text-sm); overflow-wrap: anywhere; }

@@ -91,6 +91,14 @@ bool scene_upscale_wanted() {
     return m == UpscaleMode::Fsr1 || m == UpscaleMode::Nis || m == UpscaleMode::Nearest;
 }
 
+bool is_scene_stretch(const std::string& hash) {
+    static const char* const shader = [] {
+        const game::Render* gr = game::info().render;
+        return gr && gr->scene_stretch ? gr->scene_stretch->shader : nullptr;
+    }();
+    return shader && hash == shader;
+}
+
 SpatialUpscaler* scene_upscaler(void* gfx_device, VkExtent2D in, VkExtent2D out) {
     static Fsr1Spatial* fsr = nullptr;
     static NisSpatial* nis = nullptr;

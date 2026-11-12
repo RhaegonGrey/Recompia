@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // nxrt_gfx_demo: runs the graphics shell's test scene (clear colour + tiled-texture quads), windowed or headless.
-//   nxrt_gfx_demo [--headless] [--frames N] [--fps X|vrr] [--present-mode fifo|fifo_relaxed|mailbox|immediate] [--size WxH]
+//   nxrt_gfx_demo [--selftest] [--headless] [--frames N] [--fps X|vrr] [--present-mode fifo|fifo_relaxed|mailbox|immediate] [--size WxH]
 //                 [--screenshot file.png] [--shot-frame N] [--overlay] [--gpu discrete|integrated|N|name] [--validation 0|1]
 // Windowed with --overlay: F1 shows the settings menu. Prints a one-line result.
 #include <cstdio>
@@ -8,9 +8,50 @@
 #include <cstring>
 
 #include "nxrt/log.h"
+#include "nxrt/memory.h"
 #include "nxrt/nvn.h"
 #include "nxrt/platform.h"
 #include "nxrt/scene.h"
+
+// --selftest: the guest address space without the graphics device (what the macOS port's M1 verification runs). Reserves the
+// layout, creates a 6 GiB heap section, commits, writes through the alias and maps the four module images at their lifted bases,
+// writing every guest page of them (the first Mac run died with SIGBUS inside sdk's bss, so this is the pattern the loader and
+// the guest use). Exits 0 when every step held.
+static int selftest() {
+    nxrt::mem::Config c;
+    const bool ok = nxrt::mem::init(c);
+    std::printf("mem::init %s\n", ok ? "ok" : "FAILED");
+    const bool h = nxrt::mem::heap_create(6ull << 30);
+    std::printf("heap_create(6GiB) %s\n", h ? "ok" : "FAILED");
+    const bool committed = h && nxrt::mem::heap_commit(0, 1 << 20);
+    const uint64_t alias = committed ? nxrt::mem::heap_alias(0, 1 << 16) : 0;
+    std::printf("heap_commit %s, heap_alias 0x%llx %s\n", committed ? "ok" : "FAILED", static_cast<unsigned long long>(alias),
+                alias ? "ok" : "FAILED");
+    if (alias) {
+        auto* p = reinterpret_cast<volatile uint8_t*>(alias);
+        p[0] = 0x5a;
+        std::printf("alias write ok, read back 0x%02x\n", p[0]);
+    }
+    struct ImageBase {
+        uint64_t base;
+        uint64_t size;
+        const char* name;
+    };
+    const ImageBase image_bases[] = {{nxrt::mem::kMainBase, 0x3d20000ull, "main"}, {0x7500000000ull, 0xff0000ull, "sdk"},
+                                     {0x7600000000ull, 0x140000ull, "subsdk0"}, {0x7700000000ull, 0x20000ull, "rtld"}};
+    bool images = true;
+    for (const ImageBase& im : image_bases) {
+        const bool r = nxrt::mem::reserve_fixed(im.base, im.size, im.name) && nxrt::mem::commit(im.base, im.size);
+        if (r) {
+            for (uint64_t off = 0; off < im.size; off += 0x1000) *reinterpret_cast<volatile uint8_t*>(im.base + off) = 0x11;
+        }
+        std::printf("image %s at 0x%llx (+0x%llx) %s\n", im.name, static_cast<unsigned long long>(im.base),
+                    static_cast<unsigned long long>(im.size), r ? "ok" : "FAILED");
+        images = images && r;
+    }
+    nxrt::log_flush();
+    return ok && h && committed && alias && images ? 0 : 1;
+}
 
 int main(int argc, char** argv) {
     nxrt::gfx::SceneRunDesc d;
@@ -21,7 +62,8 @@ int main(int argc, char** argv) {
     bool want_vrr_cap = false;   // --fps vrr: a cap just under the display refresh rate (VRR friendly)
     for (int i = 1; i < argc; ++i) {
         auto arg = [&](const char* name) { return !std::strcmp(argv[i], name) && i + 1 < argc; };
-        if (!std::strcmp(argv[i], "--headless")) d.headless = true;
+        if (!std::strcmp(argv[i], "--selftest")) return selftest();
+        else if (!std::strcmp(argv[i], "--headless")) d.headless = true;
         else if (arg("--frames")) d.frames = static_cast<uint32_t>(std::atoi(argv[++i]));
         else if (arg("--fps")) { ++i; if (!std::strcmp(argv[i], "vrr")) want_vrr_cap = true; else d.target_fps = std::atof(argv[i]); }
         else if (arg("--present-mode")) { if (!nxrt::gfx::parse_present_mode(argv[++i], &d.present_mode)) { std::fprintf(stderr, "bad present mode\n"); return 2; } }

@@ -273,24 +273,25 @@ void sample_keyboard(uint8_t* host, const nxrt::hid::KeyboardInput& k) {
     ring_push(ring_at<KeyboardState>(host, kKeyboard), ks);
 }
 
-// The input for one sample: the source's, or the default pads (player 1 idle FullKey, handheld in handheld mode).
+// The input for one sample: the source's, or the default pads (player 1 idle FullKey, handheld in handheld mode), through the input filter.
 InputSnapshot read_input() {
     InputSnapshot snap;
-    if (auto src = nxrt::hid::input_source()) {
+    const std::shared_ptr<nxrt::hid::InputSource> src = nxrt::hid::input_source();
+    if (src) {
         src->poll(snap);
-        uint64_t b = 0;
-        for (const auto& n : snap.npad)
-            if (n.connected) b |= n.buttons;
-        nxrt::hid::set_sampled_buttons(b);
-        return snap;
+    } else {
+        snap.npad[0].connected = true;
+        snap.npad[0].style = NpadStyle::FullKey;
+        if (!profile().docked) {
+            snap.npad[nxrt::hid::kNpadSlotHandheld].connected = true;
+            snap.npad[nxrt::hid::kNpadSlotHandheld].style = NpadStyle::Handheld;
+        }
     }
-    nxrt::hid::set_sampled_buttons(0);
-    snap.npad[0].connected = true;
-    snap.npad[0].style = NpadStyle::FullKey;
-    if (!profile().docked) {
-        snap.npad[nxrt::hid::kNpadSlotHandheld].connected = true;
-        snap.npad[nxrt::hid::kNpadSlotHandheld].style = NpadStyle::Handheld;
-    }
+    input_filter_apply(snap);
+    uint64_t b = 0;
+    for (const auto& n : snap.npad)
+        if (n.connected) b |= n.buttons;
+    nxrt::hid::set_sampled_buttons(b);
     return snap;
 }
 

@@ -23,6 +23,7 @@ std::shared_ptr<ipc::Service> make_iface(const char* name, const std::function<v
 // Forwards one stored vibration value to the sink registered with nxrt::hid::set_vibration_sink (input_source.cpp). npad_slot is the input
 // slot (0..9), hand 0 = left or the only device, 1 = right. Does nothing when no sink is registered.
 void vibration_dispatch(uint32_t npad_slot, int hand, const nxrt::hid::VibrationValue& v);
+void input_filter_apply(nxrt::hid::InputSnapshot& snap);   // input_source.cpp: the registered input filter (nxrt/input_source.h)
 
 void register_fs();          void fs_reset();          // fs.cpp          fsp-srv (+ fsp-ldr, fsp-pr stubs)
 void register_settings();    void settings_reset();    // settings.cpp    set, set:sys

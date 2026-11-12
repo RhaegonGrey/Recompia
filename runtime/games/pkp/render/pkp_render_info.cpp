@@ -49,8 +49,20 @@ constexpr game::LoopGuard kLoopGuards[] = {
     {"b81c48ff486acef4", "cp_c3", 13, "cp_t_cb0_12", 1},
 };
 
+// The 2D after the picture (#572): the composite (the LUT tone map above) is the last full-screen pass into the window texture; the HUD,
+// menus, text and the world markers (speech bubbles, "This way!") are drawn after it into the same texture as vertex-input draws, the fades
+// as full-screen draws without vertex inputs. The camera menu and the album draw the composite into a corner of it for their blurred
+// background, also without vertex inputs. Based on pokopia-native's (MIT) in-game findings for the same build (its wide view and
+// anti-aliasing notes: an effect between the composite and the HUD leaves the HUD sharp, a squeeze of the later draws moves only the 2D).
+// The scene stretch (#571). With [upscale] scene_scale below 100 the scene passes, the bloom, the composite (tone map) and the colour pass
+// after it all draw into the top-left part of the 1920x1080 targets (scissor = the part, traced at 50%: 960x540). The enlargement comes after
+// them: the game's copy shader (vs 821538a4, fs c4664b38) draws a full-screen quad into a 1920x1080 RGBA8 sRGB target from a 1920x1080
+// RGBA8 sRGB input at texture coordinates 0..0.4995 x 0..0.4991, one bilinear tap (sampler mag linear). The same shader shrinks images
+// earlier in the frame (into 80x45 and 960x540 targets); those are left alone by the target-size rule of game::SceneStretch.
+constexpr game::SceneStretch kSceneStretch = {"c4664b38f6a87835"};
+
 constexpr game::Render kRender = {&kReadbackDefer, &kCamera, kToneMaps, sizeof kToneMaps / sizeof kToneMaps[0],
-                                  kLoopGuards, sizeof kLoopGuards / sizeof kLoopGuards[0]};
+                                  kLoopGuards, sizeof kLoopGuards / sizeof kLoopGuards[0], true, &kSceneStretch};
 
 }  // namespace
 

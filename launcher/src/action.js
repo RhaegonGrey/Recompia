@@ -12,13 +12,14 @@ const setupRunning = (s) => s.setup?.progress?.state === 'running';
 
 /**
  * Where the game is. Rust reports state "running" for three different moments, told apart by play.rs's message:
- * the shader step before launch, the game itself ("pkp.exe started (process N)"), the shader step after it exits.
+ * the shader step before launch, the game itself ("pkp started (process N)" / "pkp.exe started ..."), the shader step after
+ * it exits. macOS has no shader step: its play.rs sends "Starting the game..." and then the game's message.
  */
 export function gamePhase(game) {
   if (game?.state === 'exited') return 'exited';
   if (game?.state !== 'running') return 'idle';
   const m = game.message || '';
-  if (m.startsWith('pkp.exe started')) return 'running';
+  if (m.startsWith('pkp.exe started') || m.startsWith('pkp started')) return 'running';
   if (m.startsWith('Translating the shaders the game built')) return 'finishing';
   return 'starting';
 }
@@ -93,6 +94,7 @@ export function primaryAction(s) {
   if (kind === 'setup') return on(stopped ? t('Continue setup') : t('Set up'), 'wrench', 'setup');
   if (kind === 'resume') return on(t('Continue setup'), 'wrench', 'setup');
   if (needsFinish(kind)) return on(t('Finish update'), 'wrench', 'setup');
+  if (kind === 'mods') return on(t('Set up again'), 'wrench', 'setup');   // the mods' hook points changed (Mods page)
   if (kind === 'ready') return on(t('Play'), 'play', 'play');
   return off(t('Not ready'), 'circle-alert', false);   // a kind this build does not know must not fall through to Play
 }

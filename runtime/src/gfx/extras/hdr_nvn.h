@@ -21,10 +21,13 @@ bool hdr_tonemap_variant(const std::vector<uint32_t>& words, const std::string& 
 // True when `words` is the game's tone-map fragment shader (the structural match of hdr_tonemap_patch.h); cached by hash. Independent of the HDR scene.
 bool hdr_is_tonemap(const std::vector<uint32_t>& words, const std::string& hash);
 
-// Scene upscaler (S14): the game renders the 3D scene below the output size ([upscale] scene_scale, the game's dynamic-resolution path) and its tone-map
-// pass reads that small HDR target and writes the full-size window texture. With FSR 1 or NIS on, the replay runs that upscaler on the HDR target first and the
-// tone-map draw reads the result instead of the small target (the game's bilinear filter is bypassed).
+// Scene upscaler (S14, #571): the game renders the 3D scene below the output size ([upscale] scene_scale, the game's dynamic-resolution path)
+// into the top-left part of its targets, and one copy draw the game names (game::Render::scene_stretch) stretches that part over the frame.
+// With FSR 1 or NIS the replay runs that upscaler on the part first and the stretch draw reads the result; with Nearest it samples the part
+// unfiltered (the game's bilinear tap is bypassed either way).
 bool scene_upscale_wanted();                          // the upscale mode is FSR 1, NIS or Nearest
+// True when the fragment shader of cache hash `hash` is the game's scene stretch shader (game::SceneStretch); false when the game names none.
+bool is_scene_stretch(const std::string& hash);
 class SpatialUpscaler;
 // The upscaler of the current mode for in -> out (created on first use; gfx_device is the gfx::Device of the NVN back end). NIS covers 1x to 2x per side;
 // beyond that, or when NIS failed to start, FSR 1 is used.

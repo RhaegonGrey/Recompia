@@ -405,10 +405,22 @@ const std::vector<AddOnContent>& add_on_contents() {
 
 std::string save_dir() {
     std::string d = config_get_str("fs", "save_dir", "");
+#if !defined(_WIN32)
+    // A configured Windows path would split differently in std::filesystem (backslash is a literal character) and in the
+    // shim's CreateFileW (backslash is a separator): the folder created and the folder opened were two different ones.
+    for (char& c : d)
+        if (c == '\\') c = '/';
+#endif
     if (!d.empty()) return d;
-    const char* appdata = std::getenv("APPDATA");
     const char* folder = game::info().save_folder;
+#if defined(_WIN32)
+    const char* appdata = std::getenv("APPDATA");
     return std::string(appdata && *appdata ? appdata : ".") + "\\" + (folder && *folder ? folder : "nxrt") + "\\save";
+#else
+    // The Windows default is %APPDATA%\<folder>\save; macOS keeps the same data under Application Support.
+    const char* home = std::getenv("HOME");
+    return std::string(home && *home ? home : ".") + "/Library/Application Support/" + (folder && *folder ? folder : "nxrt") + "/save";
+#endif
 }
 
 }  // namespace nxrt::services

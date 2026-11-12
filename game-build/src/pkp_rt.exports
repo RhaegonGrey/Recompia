@@ -1,0 +1,16 @@
+# The dylib counterpart of pkp_rt.def: the same symbols, with the Mach-O underscore. An export list also forces the linker
+# to pull in the static objects that define them (the lifted code imports them, the runtime library does not call them).
+_pkp_rt_main
+_pkp_rt_api
+_call_indirect
+_host_import
+_guest_trap
+_guest_unimpl
+_guest_svc
+_guest_mrs
+_guest_msr
+_nx_site_inline
+_nx_site_midhook
+_nx_hook_entry
+_stx_diag
+_nx_catch_call

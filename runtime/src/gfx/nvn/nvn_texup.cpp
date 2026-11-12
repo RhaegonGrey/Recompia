@@ -21,6 +21,8 @@
 #include <nxrt/config.h>
 #include <nxrt/log.h>
 
+#include "nvn_thread.h"
+
 namespace nxrt::nvn::be::texup {
 namespace {
 
@@ -37,7 +39,7 @@ struct State {
     std::condition_variable cv;
     std::deque<Job> q;
     std::unordered_set<uint64_t> seen;
-    std::vector<std::thread> threads;
+    std::vector<BigThread> threads;
     std::atomic<bool> stop{false};
     uint64_t held_bytes = 0, budget = 0;
     int want_threads = -1;   // -1: not read yet
@@ -126,15 +128,17 @@ bool submit(uint64_t key, uint64_t bytes, Work work) {
     s.held_bytes += bytes;
     s.st.submitted++;
     s.q.push_back(Job{key, bytes, std::move(work)});
-    if (static_cast<int>(s.threads.size()) < s.want_threads)
-        s.threads.emplace_back(worker_main, static_cast<int>(s.threads.size()));
+    if (static_cast<int>(s.threads.size()) < s.want_threads) {
+        s.threads.emplace_back();
+        s.threads.back().start("nvn-texup", 16, [index = static_cast<int>(s.threads.size()) - 1] { worker_main(index); });
+    }
     s.cv.notify_one();
     return true;
 }
 
 void shutdown() {
     State& s = S();
-    std::vector<std::thread> threads;
+    std::vector<BigThread> threads;
     {
         std::lock_guard<std::mutex> lk(s.mu);
         if (s.threads.empty() && s.q.empty() && s.st.submitted == 0) return;
@@ -144,7 +148,7 @@ void shutdown() {
         s.held_bytes = 0;
     }
     s.cv.notify_all();
-    for (std::thread& t : threads)
+    for (BigThread& t : threads)
         if (t.joinable()) t.join();
     std::lock_guard<std::mutex> lk(s.mu);
     log_totals_locked(s, "texture cache upgrade stopped");

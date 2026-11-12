@@ -285,6 +285,9 @@ struct Settings {
     // [meta] defaults_rev: the factory-defaults revision the file was written with (0 when the file has no [meta]). When a file with
     // bindings sections is read at an older revision, the newer factory bindings are added to it (play_config.cpp defaults_rev(): the game's GameDefaults::rev and additions).
     int defaults_rev = 0;
+    // [meta] display_rev: the display defaults a file has been brought to (0 when the file has no [meta]). macOS turns vsync on once for
+    // a file below 1 (a Windows controls.ini has it off, and without it MoltenVK presents mid-refresh); a player who turns it off keeps it off.
+    int display_rev = 0;
     // Transient, never written to the file: set by load_settings when it upgraded an older file, so the caller can keep a .bak and save.
     bool migrated = false;
     std::string migration_added;   // transient: the bindings the upgrade added, for the log line

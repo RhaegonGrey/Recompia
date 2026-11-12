@@ -61,9 +61,9 @@ const CACHE_FILES: [&str; 4] = ["pipeline_cache.bin", "pipeline_keys.bin", "shad
 /// launcher.json keeps the places the launcher needs; everything else is a preference and goes back to its default.
 const LAUNCHER_KEEP: [&str; 3] = ["dump_dir", "game_dir", "channel"];
 /// Files whose old copies updates set aside (`pkp_rt.dll.0.7.6`); the file with the plain name is the current one and is never listed.
-const VERSIONED: [&str; 4] = ["pkp_rt.dll", "PokopiaLauncher.AppImage", "pkp.exe", "PokopiaLauncher.exe"];
+const VERSIONED: [&str; 7] = ["pkp_rt.dll", "libpkp_rt.so", "libpkp_rt.dylib", "PokopiaLauncher.AppImage", "pkp.exe", "pkp", "PokopiaLauncher.exe"];
 /// Never a target of any action (a unit test checks that no plan names one).
-pub const PROTECTED: [&str; 11] = ["save", "save-backups", "rollback-backups", "profiles.json", "shader_cache", "build", "nup_dump", ".update", "tools", "pkp.exe", "pkp_rt.dll"];
+pub const PROTECTED: [&str; 14] = ["save", "save-backups", "rollback-backups", "profiles.json", "shader_cache", "build", "nup_dump", ".update", "tools", "pkp.exe", "pkp", "pkp_rt.dll", "libpkp_rt.so", "libpkp_rt.dylib"];
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 enum Root {
@@ -449,7 +449,7 @@ mod tests {
         for f in CACHE_FILES {
             fs::write(game.join(f), b"cache").unwrap();
         }
-        for f in ["pkp_rt.dll.0.7.6", "PokopiaLauncher.AppImage.0.7.6", "pkp_rt.dll", "pkp.exe", "PokopiaLauncher.AppImage", "pkp.log.prev", "pkp_rt.dll.bak"] {
+        for f in ["pkp_rt.dll.0.7.6", "PokopiaLauncher.AppImage.0.7.6", "pkp_rt.dll", "libpkp_rt.so", "libpkp_rt.dylib", "pkp.exe", "pkp", "PokopiaLauncher.AppImage", "pkp.log.prev", "pkp_rt.dll.bak"] {
             fs::write(game.join(f), f.as_bytes()).unwrap();
         }
         fs::write(game.join("profiles.json"), "{\"active\":\"default\"}").unwrap();
@@ -504,7 +504,7 @@ mod tests {
 
     #[test]
     fn the_launcher_reset_keeps_the_places_and_survives_a_damaged_file() {
-        let kept: serde_json::Value = serde_json::from_str(&reset_launcher_text(r#"{"dump_dir":"D:/d","game_dir":"C:/g","channel":"testing","gentle_build":true,"window":{"x":1}}"#)).unwrap();
+        let kept: serde_json::Value = serde_json::from_str(&reset_launcher_text(r#"{"dump_dir":"D:/d","game_dir":"C:/g","channel":"testing","gentle_build":true,"mods_auto_update":true,"window":{"x":1}}"#)).unwrap();
         assert_eq!(kept, serde_json::json!({"dump_dir":"D:/d","game_dir":"C:/g","channel":"testing"}));
         let bad: serde_json::Value = serde_json::from_str(&reset_launcher_text("{ this is not json")).unwrap();
         assert_eq!(bad, serde_json::json!({}));
@@ -514,10 +514,10 @@ mod tests {
 
     #[test]
     fn only_old_versioned_copies_count_as_leftovers() {
-        for yes in ["pkp_rt.dll.0.7.6", "PokopiaLauncher.AppImage.0.7.9", "pkp.exe.0.7.5", "PokopiaLauncher.exe.1.0"] {
+        for yes in ["pkp_rt.dll.0.7.6", "libpkp_rt.so.0.7.6", "libpkp_rt.dylib.0.7.6", "PokopiaLauncher.AppImage.0.7.9", "pkp.exe.0.7.5", "pkp.0.7.5", "PokopiaLauncher.exe.1.0"] {
             assert!(is_old_copy(yes), "{}", yes);
         }
-        for no in ["pkp_rt.dll", "PokopiaLauncher.AppImage", "pkp.exe", "pkp_rt.dll.bak", "pkp.log.prev", "pkp_rt.dll.", "save", "other.dll.0.7.6", ""] {
+        for no in ["pkp_rt.dll", "libpkp_rt.so", "libpkp_rt.dylib", "PokopiaLauncher.AppImage", "pkp.exe", "pkp", "pkp_rt.dll.bak", "pkp.log.prev", "pkp_rt.dll.", "save", "other.dll.0.7.6", ""] {
             assert!(!is_old_copy(no), "{}", no);
         }
     }
@@ -551,7 +551,7 @@ mod tests {
             assert_eq!(snapshot(&game.join(d)), snap, "{} changed", d);
         }
         assert_eq!(fs::read(game.join("profiles.json")).unwrap(), profiles);
-        for keep in ["pkp.exe", "pkp_rt.dll", "PokopiaLauncher.AppImage", "pkp.log.prev", "pkp_rt.dll.bak"] {
+        for keep in ["pkp.exe", "pkp", "pkp_rt.dll", "libpkp_rt.so", "libpkp_rt.dylib", "PokopiaLauncher.AppImage", "pkp.log.prev", "pkp_rt.dll.bak"] {
             assert!(game.join(keep).is_file(), "{} must stay", keep);
         }
         for gone in ["controls.ini", "pipeline_cache.bin", "pkp_rt.dll.0.7.6", "PokopiaLauncher.AppImage.0.7.6"] {

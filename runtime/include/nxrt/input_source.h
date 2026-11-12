@@ -95,6 +95,11 @@ public:
 // handheld mode and player 1 as a connected idle FullKey pad (so a game that waits for a controller proceeds).
 void set_input_source(std::shared_ptr<InputSource> src);
 std::shared_ptr<InputSource> input_source();
+// A filter between the source and the service's sample: called on the sampling thread with each snapshot (the source's, or the default
+// pads), it may change the snapshot in place before the game sees it (input other code adds or holds back). Must be cheap and must not
+// call set_input_filter itself. nullptr removes it; after set_input_filter returns, the previous filter is no longer running.
+using InputFilter = void (*)(InputSnapshot& snap, void* user);
+void set_input_filter(InputFilter fn, void* user = nullptr);
 // The buttons of the hid service's newest sample, every connected npad ORed (NpadButton bits): what the game reads. Any thread. The service
 // sets it each sample (about every 5 ms); a game module reads it to see a button the game itself does not handle.
 uint64_t sampled_buttons();

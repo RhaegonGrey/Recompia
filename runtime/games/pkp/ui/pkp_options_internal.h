@@ -2,8 +2,12 @@
 // In-game Options (pkp_options.cpp and the files it is split into): what a row is, the row lists each tab shows, and the functions one of
 // those files calls in another. Internal to those files.
 //   pkp_options.cpp        the tabs, the slot state machine and the hooks into the game's Settings screen
+//   pkp_options_model.h    what a tab is to the screen (TabModel); pkp_options_model.cpp: StaticTab, the tabs of Row tables
+//   pkp_options_capture.h  the key capture of capture rows (the Mouse Mode Key)
 //   pkp_options_rows.cpp   the rows of the PC settings tabs (Sound, Display, ... Controller) and of the Gameplay tab
 //   pkp_options_time.cpp   the Time and Events tabs: their rows, the event list and the game clock
+//   pkp_options_mods.cpp   the Mods tab: the Modtopia mods of the mods host (nxrt/mods.h)
+//   pkp_options_items.cpp  the Items tab: the item editor's screen (pkp_item_edit.h)
 #pragma once
 #include <cstddef>
 #include <cstdint>
@@ -12,6 +16,7 @@
 #include "core/pkp_settings_table.h"
 #include "nxrt/abi.h"
 #include "play_types.h"
+#include "ui/pkp_options_capture.h"
 
 namespace nxrt::games::pkp::options_detail {
 
@@ -41,6 +46,7 @@ struct Row {
     // in steps of `unit`. The screen saves it with settings::set_* when it commits (pkp_options.cpp).
     settings::Key key = settings::Key::Count;
     double unit = 0;
+    CaptureClient* capture = nullptr;     // a capture row (capture_row below): moving it captures a key for this client
 };
 
 // clang-format off
@@ -58,6 +64,14 @@ constexpr Row names(const char* label, const char* desc, const char* const* list
 }
 constexpr Row dynamic(const char* label, const char* desc, const char* (*text)(int, char*, size_t), int (*max)(), int (*get)(const S&), void (*set)(S&, int), bool restart = false) {
     return Row{label, desc, {}, 0, 0, 0, nullptr, 0, 0, nullptr, nullptr, text, max, get, set, restart, false};
+}
+// A capture row: a slider over 0..2 * capture::kMid that sits in the middle (pkp_options_capture.h); its text is the client's key. The key is
+// saved by the client when it is captured; the row's own value means nothing (its set does nothing).
+constexpr Row capture_row(const char* label, const char* desc, CaptureClient& client) {
+    Row r{label, desc, {}, 0, 0, 2 * capture::kMid, nullptr, 0, 0, nullptr, nullptr, nullptr, nullptr,
+          [](const S&) { return capture::kMid; }, [](S&, int) {}, false, false};
+    r.capture = &client;
+    return r;
 }
 // clang-format on
 
@@ -105,26 +119,7 @@ constexpr RowList rows_of(const Row (&r)[N]) {
 extern const RowList kSoundRows, kDisplayRows, kPerformanceRows, kGraphicsRows, kPictureRows, kMouseRows, kControllerRows, kGameplayRows, kOnlineRows;
 void refresh_audio_devices();                 // the Output Device row's list, read again when the screen opens
 
-// ---- pkp_options.cpp: the Mouse Mode Key row (kMouseRows) ----
-constexpr int kMmMid = 100;
-const char* mouse_mode_text(int, char* out, size_t n);
-int mouse_mode_max();
-
-// ---- pkp_options.cpp: the pad button remap rows, the last two rows of the Controller tab (two of its 13 slots) ----
-// "Controller Button" picks one of the controller's buttons and "Presses" what it presses on the Switch pad. Both are sliders in the middle
-// of a wide range whose text the rows draw themselves, like the parked Mouse Mode Key row: each left/right press or click moves the slider
-// by one and pkp_options.cpp turns the move into one step through the button list or the choice list.
-constexpr int kPadMid = 127;
-int pad_cycle_max();
-const char* pad_button_text(int, char* out, size_t n);
-const char* pad_press_text(int, char* out, size_t n);
-
-// ---- pkp_options_time.cpp ----
-extern const RowList kTimeRows;
-extern Row g_event_rows[kMaxEvents];          // the Events tab's rows, filled by load_events
-int load_events();                            // reads the event file again and fills g_event_rows; the number of rows the tab shows
-void apply_time_tab(const int (&cur)[kSlots]);                           // the Time tab's rows as the game clock (the screen commits)
-void go_to_event(int row, int (&time_cur)[kSlots], int (&time_orig)[kSlots]);   // an Events row was pressed; the Time tab's rows follow
+// ---- pkp_options_time.cpp (its tabs: pkp_options_model.h) ----
 int hook_clock_text(::Ctx* c, uint64_t, void*);   // [tweaks] clock_format in the game's time-of-day text
 
 }  // namespace nxrt::games::pkp::options_detail

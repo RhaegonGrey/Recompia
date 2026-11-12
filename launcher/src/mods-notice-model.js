@@ -8,6 +8,8 @@ export const MOD_LABELS = {
   camera_aim: 'Camera aim',
   inventory_sort: 'Sort',
   craft_search: 'Search',
+  item_editor: 'Item editor',
+  pokemon_cap_50: 'Pokemon cap',
   menu_in_game: "Mouse in the game's menus",
   taller_fov: 'Taller view on 16:10 screens',
   fix_4x3: '4:3 Fix',

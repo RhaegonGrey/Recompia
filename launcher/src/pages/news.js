@@ -141,7 +141,7 @@ export function render(el, ctx) {
     if (hit.id === 'retry') return check();
     if (hit.dataset.tag) return select(hit.dataset.tag);
     if (hit.dataset.act === 'update') return store.installUpdate();
-    if (hit.dataset.url) api.openReleaseUrl({ url: hit.dataset.url }).catch((err) => toast(errText(err), 'error'));
+    if (hit.dataset.url) api.openLink({ url: hit.dataset.url }).catch((err) => toast(errText(err), 'error'));
   });
 
   el.addEventListener('keydown', (e) => {

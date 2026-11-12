@@ -4,7 +4,7 @@ import { confirm, errText, esc, icon, toast } from '../ui.js';
 import { extractReport, formatReport } from '../handheld-report-model.js';
 import { REPORT_URL, fileLabel, filterLines, sizeText, zipName } from '../testing-model.js';
 
-const open = (url) => api.openReleaseUrl({ url });
+const open = (url) => api.openLink({ url });
 
 /** Exports the logs, then shows the folder and the bug form and says what to drag where. Nothing is uploaded from the launcher. */
 export async function sendLogs(version) {

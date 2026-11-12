@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// In-game Options, the Time and Events tabs (pkp_options_internal.h); the pure part (event file, calendar) is pkp_time.cpp.
+// In-game Options, the Time and Events tabs (pkp_options_model.h); the pure part (event file, calendar) is pkp_time.cpp.
 // Time: the game clock moved to a date and time (nxrt::services::timetravel, time.cpp). The date rows show the game's clock; "Time Travel"
 // On sets the game to them when the screen commits, Off puts the clock back on the real time. Nothing reaches Settings or the save file.
 // Events: one button row per line of [pkp] events_file (pokopia_events.tsv, read every time the screen opens); pressing one sets the game
 // clock to noon on the day the event starts, at once, fills the Time tab with it and marks that row "Chosen" (only one at a time).
-#include "ui/pkp_options_internal.h"
+#include "ui/pkp_options_model.h"
 
 #include <algorithm>
 #include <array>
@@ -58,6 +58,7 @@ const Row kTime[] = {
 std::vector<TimeEvent> g_events;               // what the Events tab shows, in row order (the labels point into it)
 std::string g_event_dates[kMaxEvents];         // each row's description
 std::string g_none_desc;
+Row g_event_rows[kMaxEvents];                  // the Events tab's rows, filled by load_events
 
 // An event row is a two-state button: "Chosen" while the game clock is on the day the event starts (Time Travel on), else "Choose".
 template <int I> int event_chosen(const S&) {
@@ -79,11 +80,6 @@ int real_today() {
     services::timetravel::local_calendar(services::timetravel::real_now(), v);
     return v[0] * 10000 + v[1] * 100 + v[2];
 }
-
-}  // namespace
-
-constinit const RowList kTimeRows = rows_of(kTime);
-Row g_event_rows[kMaxEvents];
 
 // Reads the event file again (the launcher or a script may have changed it) and fills the Events tab's rows.
 int load_events() {
@@ -138,6 +134,43 @@ void go_to_event(int row, int (&time_cur)[kSlots], int (&time_orig)[kSlots]) {
     for (int i = 0; i < 6; ++i) time_cur[i] = time_orig[i] = rows[i];
     NXLOG_I(kTag, "options: game clock set to %04d-%02d-%02d %02d:00 (%s)", year, month, day, kEventHour, g_events[row].name.c_str());
 }
+
+constexpr int kClockRows = 6;   // Time Travel, Year .. Minute: the game clock; the rows after them are play-mode Settings
+
+class TimeTab final : public StaticTab {
+public:
+    TimeTab() : StaticTab(rows_of(kTime)) {}
+    void commit(Apply& a) override {
+        if (std::memcmp(cur, orig, kClockRows * sizeof(int)) != 0) apply_time_tab(cur);
+        StaticTab::commit(a);
+    }
+};
+
+// Each row is a two-state button (kChoose); pressing one goes to the event now and keeps the row where it was (nothing to save).
+class EventsTab final : public StaticTab {
+public:
+    explicit EventsTab(TabModel& time) : StaticTab(RowList{g_event_rows, 1}), time_(time) {}
+    void open() override {
+        count_ = load_events();   // the count follows the event file
+        StaticTab::open();
+    }
+    Shape shape(int i) const override { return Shape{rows_[i].choices, 0, rows_[i].choices - 1, Use::Press}; }
+    void press(int row, int) override {
+        go_to_event(row, time_.cur, time_.orig);
+        for (int i = 0; i < kSlots; ++i) cur[i] = orig[i] = i == row ? 1 : 0;   // exactly one event is chosen
+    }
+
+private:
+    TabModel& time_;
+};
+
+TimeTab g_time;
+EventsTab g_events_tab{g_time};
+
+}  // namespace
+
+TabModel& time_tab() { return g_time; }
+TabModel& events_tab() { return g_events_tab; }
 
 // The game's time-of-day text. [tweaks] clock_format: 12h or 24h write the text here; auto leaves the language's own layout to the game.
 int hook_clock_text(::Ctx* c, uint64_t, void*) {

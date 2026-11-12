@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // [nvn] submit_thread: one worker thread that runs the render thread's queue work (vkQueueSubmit2 of the recorded batch, the present's
 // submit + vkQueuePresentKHR) in FIFO order, so the render thread can record the next frame while the driver does the submission (each
-// kernel submission is expensive under Proton: amdgpu looks up the userptr pool imports again, nvn_gpu.cpp flush_batch).
+// kernel submission is expensive on Linux: amdgpu looks up the userptr pool imports again, nvn_gpu.cpp flush_batch).
 //
 // Contract:
 // - One worker, FIFO: jobs run in the order they were pushed, one at a time. The GPU sees the submissions in recording order, as without it.
@@ -23,6 +23,8 @@
 #include <mutex>
 #include <thread>
 
+#include "nvn_thread.h"
+
 namespace nxrt::nvn::be::gpu {
 
 class SubmitWorker {
@@ -39,7 +41,7 @@ public:
         std::lock_guard<std::mutex> lk(mu_);
         if (th_.joinable()) return;
         stop_ = false;
-        th_ = std::thread([this, on_start = std::move(on_start)] {
+        th_.start("nvn-submit", 16, [this, on_start = std::move(on_start)] {
             if (on_start) on_start();
             loop();
         });
@@ -141,7 +143,7 @@ private:
     uint64_t pushed_ = 0, ran_ = 0;     // under mu_
     bool busy_ = false;
     bool stop_ = false;
-    std::thread th_;
+    BigThread th_;
     std::atomic<bool> running_{false};
     std::atomic<uint64_t> submitted_{0};
 };

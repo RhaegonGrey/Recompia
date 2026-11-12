@@ -200,6 +200,10 @@ struct Renderer::Impl {
     // set by the thread that asks for a screenshot, read by end_frame and by capture_pending() (overlay, presenting thread)
     std::atomic<bool> cap_pending{false};
     std::string cap_path;
+    std::atomic<bool> cap_bare{false};   // the pending screenshot leaves the runtime's own menus out (overlay_bare_capture)
+    // the one capture slot: taken by request_screenshot / capture_next_frame (any thread: F12, tt, a mod's game thread), given back by
+    // end_frame once cap_path/cap_out are consumed, so a second request never rewrites them under end_frame
+    std::atomic<bool> cap_claim{false};
     std::vector<uint8_t>* cap_out = nullptr;
     uint32_t* cap_w = nullptr;
     uint32_t* cap_h = nullptr;
@@ -815,6 +819,13 @@ void Renderer::end_frame(SubmitPrefix* prefix) {
         if (s.dev->create_buffer(static_cast<VkDeviceSize>(w) * h * bpp, VK_BUFFER_USAGE_TRANSFER_DST_BIT, MemoryUse::Readback, &cap, "screenshot") != VK_SUCCESS) {
             NXLOG_E(kTag, "screenshot buffer allocation failed");
             if (!s.cap_path.empty()) g_png_writes.fetch_sub(1);
+            // the request is dropped, not retried next frame (a retry would count its write twice): the slot is free again
+            s.cap_pending.store(false, std::memory_order_relaxed);
+            s.cap_bare.store(false, std::memory_order_relaxed);
+            s.cap_path.clear();
+            s.cap_out = nullptr;
+            s.cap_w = s.cap_h = nullptr;
+            s.cap_claim.store(false, std::memory_order_release);
         }
     }
     if (cap) {
@@ -1065,9 +1076,11 @@ void Renderer::end_frame(SubmitPrefix* prefix) {
         if (s.cap_w) *s.cap_w = w;
         if (s.cap_h) *s.cap_h = h;
         s.cap_pending.store(false, std::memory_order_relaxed);
+        s.cap_bare.store(false, std::memory_order_relaxed);
         s.cap_path.clear();
         s.cap_out = nullptr;
         s.cap_w = s.cap_h = nullptr;
+        s.cap_claim.store(false, std::memory_order_release);
         s.st.screenshots++;
     }
 }
@@ -1119,20 +1132,26 @@ uint32_t Renderer::image_count() const { return static_cast<uint32_t>(impl_->tar
 uint32_t Renderer::frames_in_flight() const { return impl_->desc.frames_in_flight; }
 bool Renderer::headless() const { return impl_->headless; }
 
-void Renderer::request_screenshot(const std::string& png_path) {
+bool Renderer::request_screenshot(const std::string& png_path, bool bare) {
+    if (impl_->cap_claim.exchange(true, std::memory_order_acq_rel)) return false;
     g_png_writes.fetch_add(1);   // until the worker has written the file (wait_screenshot_writes)
     impl_->cap_path = png_path;
+    impl_->cap_bare.store(bare, std::memory_order_relaxed);
     impl_->cap_pending.store(true, std::memory_order_release);   // after the path is set: end_frame reads the path once it sees the flag
+    return true;
 }
 
-void Renderer::capture_next_frame(std::vector<uint8_t>* rgba, uint32_t* width, uint32_t* height) {
+bool Renderer::capture_next_frame(std::vector<uint8_t>* rgba, uint32_t* width, uint32_t* height) {
+    if (impl_->cap_claim.exchange(true, std::memory_order_acq_rel)) return false;
     impl_->cap_out = rgba;
     impl_->cap_w = width;
     impl_->cap_h = height;
     impl_->cap_pending.store(true, std::memory_order_release);
+    return true;
 }
 
 bool Renderer::capture_pending() const { return impl_->cap_pending.load(std::memory_order_relaxed); }
+bool Renderer::capture_bare() const { return impl_->cap_pending.load(std::memory_order_relaxed) && impl_->cap_bare.load(std::memory_order_relaxed); }
 
 RendererStats Renderer::stats() const { return impl_->st; }
 void Renderer::wait_idle() { impl_->dev->wait_idle(); }

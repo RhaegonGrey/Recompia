@@ -15,6 +15,9 @@
 
 namespace nxrt::gfx {
 
+// vk_renderer.cpp: waits for the PNG workers a requested screenshot runs on.
+void wait_screenshot_writes();
+
 SceneRunResult run_scene(const SceneRunDesc& desc) {
     // Environment switches for automated runs (also ini keys): [gfx] headless / NXRT_GFX_HEADLESS=1 runs offscreen without a
     // window; [gfx] screenshot / NXRT_GFX_SCREENSHOT=<file.png> captures [gfx] screenshot_frame (default 60).
@@ -147,6 +150,7 @@ SceneRunResult run_scene(const SceneRunDesc& desc) {
         }
         const uint64_t t1 = FrameLimiter::now_ns();
         rend->wait_idle();
+        wait_screenshot_writes();   // a requested shot is encoded on a worker; do not exit out from under it (vk_renderer.cpp)
 
         if (d.boost_priority) {
             SetThreadPriority(GetCurrentThread(), old_prio);

@@ -6,6 +6,8 @@
 //            3 scene-linear to scRGB. "Scene-linear" is the HDR scene pipeline's window texture: float16, 1.0 = paper white, values above 1 are highlights.
 //   picture  optional colour controls (black level, contrast, saturation, gamma) on the display-encoded signal before the encode; for the
 //            scene-linear modes the signal is rgb^(1/2.2) and goes back with ^2.2. Off: the encode is exactly the plain one.
+//   matrix   optional 3x4 colour matrix (nxrt/color_matrix.h) before the picture controls, on the sRGB-encoded picture: SDR on the output
+//            signal; HDR on the scene-linear value through the sRGB curve continued past 1 (1.0 = paper white). Off: skipped in the shader.
 //   upscale  AMD FSR 1: EASU into a float16 image the size of the picture, then RCAS (sharpen), then the encode above reads that image. Used when the
 //            picture on screen is larger than the source crop. In HDR scene mode both run on c = x / (1 + x), so highlights above 1 survive the filters.
 //            Or NVIDIA Image Scaling (one pass, same compression) for scales up to 2x per side; FSR 1 beyond that.
@@ -38,6 +40,8 @@ struct OutputParams {
     float sharpness = 0.8f;                  // 0..1 (RCAS / NIS)
     bool picture = false;                    // apply the picture controls (nxrt/extras.h PictureSettings) in the encode
     float pic[4] = {1, 1, 0, 1};             // contrast, saturation, black, gamma
+    bool color_matrix = false;               // apply cm (nxrt/color_matrix.h) in the encode, before the picture controls
+    float cm[12] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0};
 };
 
 class OutputPass {
@@ -63,7 +67,7 @@ public:
 private:
     VkPipeline encode_pipeline(VkFormat fmt);
     void encode(VkCommandBuffer cb, VkImageView dst_view, VkFormat dst_format, VkExtent2D dst_extent, VkImageView src, VkExtent2D src_extent, const int32_t crop[4],
-                bool keep_aspect, bool flip_y, int mode, float paper, float peak, VkImageLayout src_layout, const float* pic);
+                bool keep_aspect, bool flip_y, int mode, float paper, float peak, VkImageLayout src_layout, const float* pic, const float* cm);
 
     gfx::Device* dev_ = nullptr;
     VkSampler linear_ = VK_NULL_HANDLE, nearest_ = VK_NULL_HANDLE;

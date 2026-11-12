@@ -186,6 +186,21 @@ bool parse_onto(const std::string& text, Settings* s, std::string* err, std::vec
     } else if (with_default_bindings) {
         s->defaults_rev = defaults_rev();   // the factory bindings were applied, so the result is at the current revision
     }
+#if defined(__APPLE__)
+    // Display defaults revision 1 (macOS): vsync on. With it off the swapchain presents immediately and Metal shows frames mid-refresh:
+    // the game tore and flashed partly drawn frames on a MacBook with the frame time swinging between 8 and 50 ms. Applied once to the
+    // factory text and to an older file (which is then saved); a player who turns vsync off afterwards keeps it off.
+    if (s->display_rev < 1) {
+        if (!s->display.vsync) {
+            s->display.vsync = true;
+            if (has_bindings) {
+                s->migrated = true;
+                s->migration_added += s->migration_added.empty() ? "vsync on (macOS)" : ", vsync on (macOS)";
+            }
+        }
+        s->display_rev = 1;
+    }
+#endif
     return true;
 }
 

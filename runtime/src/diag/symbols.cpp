@@ -8,6 +8,16 @@
 #include <windows.h>
 #include <dbghelp.h>
 
+#if !defined(_WIN32)
+#include <dlfcn.h>
+#if defined(__APPLE__)
+#include <mach-o/dyld.h>
+#include <mach-o/loader.h>
+#elif defined(__linux__)
+#include <link.h>   // dl_iterate_phdr, ElfW
+#endif
+#endif
+
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
@@ -230,6 +240,11 @@ bool read_file(const std::string& path, std::string& text) {
 // folder, where pkp.map sits, when the exe was copied somewhere else (the play folder) without its map. Empty when there is none
 // (the package flavour links with /PDBALTPATH:pkp.pdb: a bare name, which the caller resolves against the exe folder anyway).
 std::string map_path_from_debug_directory() {
+#if !defined(_WIN32)
+    // No PE debug directory, no .map: a macOS build carries its symbols in the Mach-O image, and the embedded table is
+    // the fallback this function exists to improve on (symbols.cpp, the map loader below).
+    return {};
+#else
     const auto* base = reinterpret_cast<const unsigned char*>(GetModuleHandleA(nullptr));
     if (!base) return {};
     const auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(base);
@@ -251,10 +266,15 @@ std::string map_path_from_debug_directory() {
         return pdb.substr(0, dot) + ".map";
     }
     return {};
+#endif
 }
 
 // "Timestamp is XXXXXXXX" of a map against the exe's header: the map belongs to this build.
 bool map_matches_exe(const std::string& text) {
+#if !defined(_WIN32)
+    (void)text;
+    return false;   // the check reads the PE header's TimeDateStamp; there is no PE header here
+#else
     constexpr std::string_view kTs = "Timestamp is ";
     const size_t p = text.find(kTs);
     if (p == std::string::npos || p > 4096) return false;
@@ -269,6 +289,7 @@ bool map_matches_exe(const std::string& text) {
     const auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(base);
     const auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS*>(base + dos->e_lfanew);
     return digits == 8 && v == nt->FileHeader.TimeDateStamp;
+#endif
 }
 
 }  // namespace
@@ -314,8 +335,102 @@ size_t symbols_load_map_text(const std::string& text) {
     return n;
 }
 
+size_t symbols_count() { return current_table()->entries.size(); }
+
+#if !defined(_WIN32)
+namespace {
+// The image list at startup. A fixed table, filled once before any thread exists: the crash report reads it while a thread
+// may be inside dyld (holding its lock), so nothing here may call into dyld at report time.
+struct ImgRec {
+    uintptr_t lo = 0, hi = 0;
+    char name[64] = {};
+};
+ImgRec g_imgs[256];
+int g_img_n = 0;
+}  // namespace
+
+void symbols_snapshot_images() {
+#if defined(__APPLE__)
+    const uint32_t n = _dyld_image_count();
+    int k = 0;
+    for (uint32_t i = 0; i < n && k < static_cast<int>(sizeof g_imgs / sizeof g_imgs[0]); ++i) {
+        const mach_header* h = _dyld_get_image_header(i);
+        if (!h || h->magic != MH_MAGIC_64) continue;
+        const intptr_t slide = _dyld_get_image_vmaddr_slide(i);
+        const auto* mh = reinterpret_cast<const mach_header_64*>(h);
+        // The header's own address is the image base. The range comes from the segments that belong to the image: the zero-fill
+        // __GUEST segment has fileoff 0 and sits 72 GiB away, so a segment whose vmaddr is not near the header (or below it,
+        // like __PAGEZERO) is not part of the image's code.
+        uintptr_t lo = reinterpret_cast<uintptr_t>(h), hi = lo;
+        const uint8_t* p = reinterpret_cast<const uint8_t*>(mh) + sizeof(mach_header_64);
+        for (uint32_t c = 0; c < mh->ncmds; ++c) {
+            const auto* lc = reinterpret_cast<const load_command*>(p);
+            if (lc->cmdsize == 0) break;
+            if (lc->cmd == LC_SEGMENT_64) {
+                const auto* sg = reinterpret_cast<const segment_command_64*>(lc);
+                const uintptr_t v = static_cast<uintptr_t>(sg->vmaddr + static_cast<uint64_t>(slide));
+                if (v >= lo && v - lo < (uintptr_t{1} << 30)) {
+                    const uintptr_t end = v + static_cast<uintptr_t>(sg->vmsize);
+                    if (end > hi) hi = end;
+                }
+            }
+            p += lc->cmdsize;
+        }
+        const char* path = _dyld_get_image_name(i);
+        const char* slash = path ? std::strrchr(path, '/') : nullptr;
+        g_imgs[k].lo = lo;
+        g_imgs[k].hi = hi;
+        std::snprintf(g_imgs[k].name, sizeof g_imgs[k].name, "%s", slash ? slash + 1 : (path ? path : "?"));
+        ++k;
+    }
+    g_img_n = k;
+#elif defined(__linux__)
+    // dl_iterate_phdr walks the loaded objects while holding the dynamic loader's lock, which is exactly what the report may
+    // not do (a faulting thread can be inside it). The list is taken once at startup, into the same fixed table.
+    // dlpi_name is empty for the executable itself, which lands in slot 0 for symbols_main_base.
+    dl_iterate_phdr(
+        [](struct dl_phdr_info* info, size_t, void*) -> int {
+            uintptr_t lo = ~uintptr_t{0}, hi = 0;
+            for (int i = 0; i < info->dlpi_phnum; ++i) {
+                const ElfW(Phdr)& ph = info->dlpi_phdr[i];
+                if (ph.p_type != PT_LOAD) continue;
+                const uintptr_t v = static_cast<uintptr_t>(info->dlpi_addr + ph.p_vaddr);
+                if (v < lo) lo = v;
+                if (v + static_cast<uintptr_t>(ph.p_memsz) > hi) hi = v + static_cast<uintptr_t>(ph.p_memsz);
+            }
+            if (hi <= lo) return 0;
+            if (g_img_n >= static_cast<int>(sizeof g_imgs / sizeof g_imgs[0])) return 1;
+            const char* path = info->dlpi_name;
+            const char* slash = (path && *path) ? std::strrchr(path, '/') : nullptr;
+            const char* name = slash ? slash + 1 : path;
+            g_imgs[g_img_n].lo = lo;
+            g_imgs[g_img_n].hi = hi;
+            std::snprintf(g_imgs[g_img_n].name, sizeof g_imgs[g_img_n].name, "%s", (name && *name) ? name : "exe");
+            ++g_img_n;
+            return 0;
+        },
+        nullptr);
+#endif
+}
+
+uint64_t symbols_main_base() { return g_img_n > 0 ? static_cast<uint64_t>(g_imgs[0].lo) : 0; }
+#endif
+
 SymbolInfo symbols_lookup(uint64_t host_addr) {
     SymbolInfo info;
+#if !defined(_WIN32)
+    // A snapshot of the image list taken at startup (symbols_snapshot_images): the report must not call into dyld, whose
+    // lock a faulting thread may hold, and dladdr takes exactly that lock.
+    for (int i = 0; i < g_img_n; ++i) {
+        if (host_addr < g_imgs[i].lo || host_addr >= g_imgs[i].hi) continue;
+        info.module = g_imgs[i].name;
+        info.offset = host_addr - g_imgs[i].lo;
+        return info;
+    }
+    info.module = "?";
+    info.offset = host_addr;
+    return info;   // no linker map on macOS: module+offset is the answer
+#else
     HMODULE mod = nullptr;
     if (!GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
                             reinterpret_cast<LPCSTR>(static_cast<uintptr_t>(host_addr)), &mod) ||
@@ -348,6 +463,7 @@ SymbolInfo symbols_lookup(uint64_t host_addr) {
     info.sym_offset = dist;
     info.from_map = true;
     return info;
+#endif
 }
 
 std::string symbols_describe(uint64_t host_addr) {

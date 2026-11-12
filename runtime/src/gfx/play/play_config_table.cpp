@@ -2,6 +2,7 @@
 // Play mode: the settings table of controls.ini and its generic reader and writer, see play_config_table.h.
 #include "play_config_table.h"
 
+#include <cmath>
 #include <string>
 #include <vector>
 
@@ -165,7 +166,14 @@ bool read_aspect(const std::string& k, const std::string& v, Settings* s, std::s
     s->display.aspect = x;
     return true;
 }
-std::string write_aspect(const Settings& s) { return s.display.aspect <= 0 ? std::string("auto") : num_exact(s.display.aspect); }
+// A common ratio is written as W:H, so the file stays readable and the launcher's aspect list finds it; any other value as a number.
+std::string write_aspect(const Settings& s) {
+    if (s.display.aspect <= 0) return "auto";
+    static constexpr int kRatios[][2] = {{16, 9}, {16, 10}, {21, 9}, {32, 9}, {4, 3}};
+    for (const auto& r : kRatios)
+        if (std::fabs(s.display.aspect - static_cast<double>(r[0]) / r[1]) < 1e-6) return std::to_string(r[0]) + ":" + std::to_string(r[1]);
+    return num_exact(s.display.aspect);
+}
 
 bool read_quality_preset(const std::string&, const std::string& v, Settings* s, std::string* msg) {
     const QualityPresetInfo* q = find_quality_preset(v);
@@ -213,6 +221,8 @@ bool read_picture_preset(const std::string&, const std::string& v, Settings* s, 
 const SettingDef kTable[] = {
     {ROW("meta", "defaults_rev", Int), WHOLE(defaults_rev), .lo = 0, .hi = 1000,
      .doc = "The factory-defaults revision the file was written with (the game writes it; a file without it counts as 0). An older file gets the newer factory bindings and values at the next start."},
+    {ROW("meta", "display_rev", Int), WHOLE(display_rev), .lo = 0, .hi = 1000,
+     .doc = "The display-defaults revision the file was written with (the game writes it; a file without it counts as 0). macOS turns vsync on for an older file."},
 
     {ROW("mouse", "yaw", Real), REAL(mouse.yaw_rad), .doc = "Horizontal mouse sensitivity in radians per count."},
     {ROW("mouse", "pitch", Real), REAL(mouse.pitch_rad), .doc = "Vertical mouse sensitivity in radians per count."},

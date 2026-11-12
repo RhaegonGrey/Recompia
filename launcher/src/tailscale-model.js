@@ -45,6 +45,6 @@ export function friendRows(report) {
 }
 
 /** The Link Play page state a click on Join means. The room code is not known here, the page asks for it. */
-export const joinUi = (row) => ({ view: 'internet', role: 'visit', through: false, visitAddr: row.addr, visitCode: '' });
+export const joinUi = (row) => ({ view: 'internet', server: 'own', role: 'visit', through: false, visitAddr: row.addr, visitCode: '' });
 
 export const joinNote = (row) => `Now paste the invite from ${row.name} (or type their room code) to finish.`;

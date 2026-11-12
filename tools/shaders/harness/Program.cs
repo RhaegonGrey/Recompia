@@ -55,8 +55,19 @@ namespace SpirvHarness
         /// NVN2 (Switch 2) control section: magic 0x98761234, version 201 (docs/AMPERE.md section 3).
         public static bool IsNvn2(byte[] ctrl) => ctrl != null && ctrl.Length >= 0xd8 && BitConverter.ToUInt32(ctrl, 0) == 0x98761234 && BitConverter.ToUInt32(ctrl, 4) == 201;
 
+        const string Usage =
+            "usage: spirv_harness <code.bin> <ctrl.bin> [-o out.spv] [--glsl] [--glslc <GLSLC output, NVN2>]\n" +
+            "       spirv_harness --batch <extracted dir> --out <dir> [--jobs N] [--limit N] [--no-val] [--no-retry] [--debug-mode] [--target-env E] [--host desktop|moltenvk] [--spirv-val PATH] [--reflect <Ampere corpus>]";
+
         static int Main(string[] args)
         {
+            // --help on stdout and exit 0, so a packaging check can prove the published binary starts (the usage below, for a
+            // missing or wrong argument, goes to stderr with exit 2, which is a failure).
+            if (args.Contains("--help") || args.Contains("-h"))
+            {
+                Console.WriteLine(Usage);
+                return 0;
+            }
             NoRetry = args.Contains("--no-retry");
             StaticGpuAccessor.DesktopHost = Opt(args, "--host", "desktop") != "moltenvk";
             Debug = args.Contains("--debug-mode");
@@ -83,9 +94,7 @@ namespace SpirvHarness
                 Fail(outDir, e.ToString());
                 return 3;
             }
-            Fail(outDir, $"arguments: {string.Join(' ', args)}\n" +
-                         "usage: spirv_harness <code.bin> <ctrl.bin> [-o out.spv] [--glsl] [--glslc <GLSLC output, NVN2>]\n" +
-                         "       spirv_harness --batch <extracted dir> --out <dir> [--jobs N] [--limit N] [--no-val] [--no-retry] [--debug-mode] [--target-env E] [--host desktop|moltenvk] [--spirv-val PATH] [--reflect <Ampere corpus>]");
+            Fail(outDir, $"arguments: {string.Join(' ', args)}\n" + Usage);
             return 2;
         }
 
@@ -466,11 +475,26 @@ namespace SpirvHarness
                 // A translator bug could loop forever; run on a task so a stuck block is reported, not waited on.
                 Task<(Result, byte[])> t = Task.Run(() =>
                 {
-                    Result x = Translate(Blobs.Read(job.CodePath), Blobs.Read(job.CtrlPath), out byte[] s, false, job.GlslcPath);
-                    return (x, s);
+                    try
+                    {
+                        Result x = Translate(Blobs.Read(job.CodePath), Blobs.Read(job.CtrlPath), out byte[] s, false, job.GlslcPath);
+                        return (x, s);
+                    }
+                    catch (Exception e)
+                    {
+                        // One unreadable or broken block must not end a 99,000-block run: its row says so and the run goes on.
+                        return (new Result { Status = "error", Error = $"{e.GetType().Name}: {e.Message} [{job.CodePath} / {job.CtrlPath}]" }, null);
+                    }
                 });
-                if (t.Wait(Timeout)) (r, spv) = t.Result;
-                else r = new Result { Status = "timeout", Error = $"no result after {Timeout.TotalSeconds} s" };
+                try
+                {
+                    if (t.Wait(Timeout)) (r, spv) = t.Result;
+                    else r = new Result { Status = "timeout", Error = $"no result after {Timeout.TotalSeconds} s" };
+                }
+                catch (AggregateException e)
+                {
+                    r = new Result { Status = "error", Error = e.InnerException?.Message ?? e.Message };
+                }
                 r.Hash = job.Hash;
                 r.Group = job.Group;
                 r.Stages = job.Stages;

@@ -17,6 +17,7 @@
 //   poll_waits       SleepThread calls of polling loops that end when the polled value changes (PollWait below) games/pkp/core/pkp_core.cpp
 //   settings_doc     the keys of the game's own game-ini section, described (nxrt/setting_doc.h)              games/pkp/core/pkp_settings_table.cpp
 //   render           graphics facts: readback shape, camera block, tone-map shaders (nxrt/game_render.h)   games/pkp/render/pkp_render_info.cpp
+//   mods             the mods host's folders, name and shader files (nxrt/mods.h, ModHost below)             games/pkp/core/pkp_data.cpp
 // The registry is header-only, so programs that do not link the runtime library (the launcher's tools) use it too.
 #pragma once
 #include <cstdint>
@@ -59,6 +60,19 @@ struct PollWatch {
 struct PollWait {
     uint64_t ret = 0;
     bool (*watch)(const ::Ctx& c, PollWatch* w) = nullptr;
+};
+
+// What the mods host (nxrt/mods.h: Modtopia mods) needs from the game. Paths are relative to the game folder (the working directory of an
+// installed game). The game version the mods' hook points and the mappings are picked by is Info::version.
+struct ModHost {
+    const char* host = "";                                     // the host's name shown to mods, before the build's version ("Recompia")
+    const char* mods_dir = "mods";                             // the player's mods (the core's own layout inside)
+    const char* mappings_dir = "modtopia/mappings";            // the embedded mappings are written here when absent or different
+    const char* hooks_built = "build/mod-hooks-built.tsv";     // the hook points built into the game exe ("modtopia hooks 1" + site column)
+    // The game's files that hold shaders (RomFS paths, '/' separated, compared without case). A data mod that replaces one brings shaders
+    // the shader cache has no translation for, which are translated only after the game closes; the core notes that on the mod (file_note).
+    const char* const* shader_files = nullptr;
+    uint32_t shader_file_count = 0;
 };
 
 // The console the game was built for. Switch 2 games run on the same Horizon model with a few platform facts that differ
@@ -106,6 +120,8 @@ struct Info {
     std::vector<setting_doc::Row> (*settings_doc)() = nullptr;
     // What the graphics back end may know about the game's rendering (nxrt/game_render.h); null: those features are off.
     const Render* render = nullptr;
+    // Modtopia mods (nxrt/mods.h); null: no mods are loaded. Pure data.
+    const ModHost* mods = nullptr;
 };
 
 // The registered game, or nullptr. One slot per program (the function-local static is shared by every translation unit that inlines it).

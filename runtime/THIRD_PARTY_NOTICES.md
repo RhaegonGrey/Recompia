@@ -62,7 +62,7 @@ Code taken from that project carries a `// From pokopia-native (MIT), <path> @7c
 
 The GPU-made indirect quad arguments (`src/gfx/nvn/nvn_replay.cpp` quad_args_gpu, `src/gfx/nvn/nvn_quad_args_shader.inc`) are based on pokopia-native @27a6df0 (1.2.6), `windows/src/nxrt/vk/vk_replay.c` quad_args and `windows/src/nxrt/vk/shaders/quad_args.comp`, under the same MIT licence; those files carry a `Based on pokopia-native (MIT) ... @27a6df0` header comment.
 
-`third_party/pokopia-coop/` is pokopia-native's co-op module, `windows/src/coop/{coop.h,coop_int.h,*.c}` pinned at commit 9cb7f07a663f78f92b0015d49ea49f8c73968b8e (9cb7f07, pokopia-native 1.4.0), under the same MIT licence (above). The files are unchanged except for a first line `// From pokopia-native (MIT) windows/src/coop/<file> @9cb7f07` and two modifications: `coop_int.h` and `coop_mpnet.c` carry the relay UDP extension (game datagrams over UDP through a relay that supports it, only between our builds; every change is marked `// pokopia-recomp extension: relay UDP`, the protocol is in `launcher/src-tauri/src/relay/mod.rs`), and `coop.h`, `coop_int.h`, `coop_ldn.c`, `coop_plat.c` and `coop_disc.c` carry the LAN sweep and mDNS responder (only on Windows without DNS-SD, Wine and Proton: scanning sweeps the LAN for hosts, hosting answers mDNS with its DNS-SD records, and the network-profile hint is skipped under Wine; marked `// pokopia-recomp extension: LAN sweep` or `mDNS responder`, `[net] lan_sweep`); its tests and `nxnative/` glue are not included. The launcher's relay (`launcher/src-tauri/src/relay/engine.rs`, `--host`) is a Rust port of its `windows/tools/coop-relay` at 035bd9c (unchanged up to 9cb7f07), with the same extension. The ldn and bsd services call it for `[net] protocol = native` (Link Play with pokopia-native builds).
+`third_party/pokopia-coop/` is pokopia-native's co-op module, `windows/src/coop/{coop.h,coop_int.h,*.c}` pinned at commit 9cb7f07a663f78f92b0015d49ea49f8c73968b8e (9cb7f07, pokopia-native 1.4.0), under the same MIT licence (above). The files are unchanged except for a first line `// From pokopia-native (MIT) windows/src/coop/<file> @9cb7f07` and two modifications: `coop_int.h` and `coop_mpnet.c` carry the relay UDP extension (game datagrams over UDP through a relay that supports it, only between our builds; every change is marked `// pokopia-recomp extension: relay UDP`, the protocol is in `launcher/relay/src/mod.rs`), and `coop.h`, `coop_int.h`, `coop_ldn.c`, `coop_plat.c` and `coop_disc.c` carry the LAN sweep and mDNS responder (only on Windows without DNS-SD, Wine and Proton: scanning sweeps the LAN for hosts, hosting answers mDNS with its DNS-SD records, and the network-profile hint is skipped under Wine; marked `// pokopia-recomp extension: LAN sweep` or `mDNS responder`, `[net] lan_sweep`); its tests and `nxnative/` glue are not included. The launcher's relay (`launcher/relay/src/engine.rs`, `--host`) is a Rust port of its `windows/tools/coop-relay` at 035bd9c (unchanged up to 9cb7f07), with the same extension. The ldn and bsd services call it for `[net] protocol = native` (Link Play with pokopia-native builds).
 
 Its `ampere-lower/` folder is separate: it is GPL-3.0-or-later, not MIT. Per its `NOTICE.md` it is a cut-down build of the `ampere-spirv` tool from the Eden-NS2 emulator fork (https://github.com/0x2593/Eden-NS2, GPL-3.0-or-later): the Switch 2 (Ampere) shader capture and the Ampere-to-Maxwell lowering headers from `src/shader_recompiler/frontend/ampere/`, with `main.cpp` reduced to the lowering stage. The headers are unchanged except for four Pokopia fixes (FSEL operand modifiers, HFMA2 `.H0_NH1` lane swap). Its `LICENSE` is the GPL-3.0 text, the same as the `LICENSE` file at the repository root.
 
@@ -71,6 +71,14 @@ Its `ampere-lower/` folder is separate: it is GPL-3.0-or-later, not MIT. Per its
 `src/media/movie_mf.cpp` (the `movie::` library on Media Foundation) follows the design of smo-recomp `runtime/services/nnmovie_mf.c` (GPL-3.0): the object layouts of the library, the decoder's two buffer pools, and the token that carries a decoded sample from the extractor to a decoder. The code is rewritten for nxrt (C++, a decode-ahead worker, edit lists, the plain exported wrappers instead of virtual calls).
 
 The nxrt parts that come from smo-recomp and ScarletNX are under GPL-3.0, like nxrt itself (GPL-3.0-or-later). The same holds for the ssbu-recomp references in `include/nxrt/diag.h`, `src/eh/*` (facts read from `runtime/eh_runtime.h` and `runtime/nncxxrt.c`: header layout of the SDK's libc++abi, the non-unique-name bit) and `src/core/hooks.cpp` (idea only). Upstream licence files: smo-recomp `LICENSE` (GPL-3.0), ScarletNX `LICENSE` (GPL-3.0; its source headers say GPL-3.0-or-later), ssbu-recomp `LICENSE` (GPL-3.0). The GPL-3.0 text for nxrt is the `LICENSE` file at the repository root.
+
+## PokoMac (GPL-3.0)
+
+PokoMac (https://github.com/Chaos192/PokoMac, Copyright (c) 2026 Chaos192) is the Apple-silicon port of this project, under GPL-3.0. Code adapted from it: the macOS tuning in commit `72e2221` (`recomp/include/nxrecomp/ctx.h` and `cxx.h` LDAR/STLR ordering, `recomp/nxrecomp/lift/a64.py`, `lift/tier2/misc.py`, `src/gfx/nvn/nvn_shaders.cpp` ARMv8 SHA-1, `src/gfx/vk_device.cpp` portability extensions, `src/mem/write_watch.cpp` host pages, `src/gfx/nvn/nvn_gpu_pool.cpp`, `src/gfx/nvn/nvn_pipeline.cpp`, `src/gfx/frame_limiter.cpp`, `src/gfx/play/play_config*.cpp`, `game-build/release_b/pkp_build.py` Metal shader-cache identity), and the Win32-over-POSIX layer of the native Linux and macOS port (Dittobyte/Recompia#562: `src/os/os_posix*.cpp`, `src/os/nx_os.h`, `src/os/compat/*`), which follows PokoMac's `runtime/platform/posix/` (nxwin). PokoMac's own `CREDITS.md` asks that the credit "PokoMac by Chaos192 (github.com/Chaos192/PokoMac)" stays visible. The GPL-3.0 text is the `LICENSE` file at the repository root.
+
+## Eglantine / Lichii (GPL-3.0)
+
+`games/pkp/core/pkp_pokemon_cap.cpp` ports the default (non-staged) behaviour of the Eglantine Pokémon cap, and the id token answers in `src/services/acc.cpp` follow Lichii / Eglantine `src/core/hle/service/acc/acc.cpp` (yuzu family, GPL-3.0). Both files are GPL-3.0-or-later here; the GPL-3.0 text is the `LICENSE` file at the repository root.
 
 ## LLVM libc++abi (Apache-2.0 with LLVM exceptions)
 
@@ -282,6 +290,36 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
+```
+
+## Modtopia 0.6.1 (MIT)
+
+`third_party/modtopia/` is the Modtopia mod loader 0.6.1: its core (`core/src/*.c`, `*.h`), its SDK headers (`sdk/include/modtopia/`) and
+its function-name mappings (`mappings/*.toml`), copied unchanged from the Modtopia 0.6.1 package. The runtime's mods host
+(`src/mods/`) links the core to run Modtopia mods. `LICENSE`, reproduced verbatim:
+
+```text
+MIT License
+
+Copyright (c) 2026 The Modtopia contributors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
 ```
 
 ## Ryujinx and ryubing (MIT)

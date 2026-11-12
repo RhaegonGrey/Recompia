@@ -376,12 +376,10 @@ class Fn:
                 return SET(rs, 0, 'stxp64(c, %s, %s, %s)' % (XS(rn), R(rt, 1), R(rt2, 1)))
             nb = 8 << size
             rs = bits(w, 20, 16)
-            if o2:                                       # ldar / stlr: ordered, not exclusive -> acquire / sequentially consistent store
-                # AArch64 orders STLR before a later LDAR (RCsc); x86 lets a later load pass a plain (release) store, so STLR is a
-                # seq_cst store (xchg): store-then-check handshakes (job systems, sleep/wake flags) otherwise see stale values.
-                if load:
-                    return SET(rt, 1, '__atomic_load_n((uint%d_t *)(uintptr_t)%s, __ATOMIC_ACQUIRE)' % (nb, XS(rn)))
-                return '__atomic_store_n((uint%d_t *)(uintptr_t)%s, (uint%d_t)%s, __ATOMIC_SEQ_CST);' % (nb, XS(rn), nb, R(rt, size == 3))
+            if o2:                                       # ldar / stlr: ordered, not exclusive -> ctx.h ldar* / stlr* (the ordering
+                if load:                                 # each host needs is decided there: an acquire load is too weak)
+                    return SET(rt, 1, 'ldar%d(%s)' % (nb, XS(rn)))
+                return 'stlr%d(%s, (uint%d_t)%s);' % (nb, XS(rn), nb, R(rt, size == 3))
             if load:                                     # ldxr / ldaxr: remember address and value
                 return '{ uint64_t a = %s; c->ex_addr = a; c->ex_val = rd%d(a); %s }' % (XS(rn), nb, SET(rt, 1, 'c->ex_val'))
             # stxr / stlxr: succeeds only if the value is still the one loaded (compare-and-swap)

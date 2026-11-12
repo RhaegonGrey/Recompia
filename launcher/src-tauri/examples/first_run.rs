@@ -4,17 +4,40 @@
 //! Builds pkp.exe from the dump (gamebuild.rs) and then the shader cache (shaders.rs), the same code Set up runs; on Linux
 //! it fetches the Linux build tools first (host.rs). Prints each phase's time.
 
+// host.rs reaches the launcher's own modules, so an example carries the same set the binary declares (main.rs), by path.
+#[allow(dead_code, clippy::all)]
+#[path = "../src/config.rs"]
+mod config;
+#[allow(dead_code)]
+#[path = "../src/download.rs"]
+mod download;
+#[allow(dead_code, clippy::all)]
+#[path = "../src/dump.rs"]
+mod dump;
+#[allow(dead_code, clippy::all)]
+#[path = "../src/fsutil.rs"]
+mod fsutil;
 #[allow(dead_code)]
 #[path = "../src/gamebuild.rs"]
 mod gamebuild;
+#[allow(dead_code)]
 #[path = "../src/harness.rs"]
 mod harness;
 #[allow(dead_code)]
 #[path = "../src/host.rs"]
 mod host;
+#[allow(dead_code, clippy::all)]
+#[path = "../src/ini.rs"]
+mod ini;
+#[allow(dead_code, clippy::all)]
+#[path = "../src/paths.rs"]
+mod paths;
 #[allow(dead_code)]
 #[path = "../src/runtime_api.rs"]
 mod runtime_api;
+#[allow(dead_code, clippy::all)]
+#[path = "../src/settings.rs"]
+mod settings;
 #[allow(dead_code)]
 #[path = "../src/shader_archive.rs"]
 mod shader_archive;
@@ -63,7 +86,7 @@ fn main() {
         Err(e) => fail(e),
     }
     if !gamebuild::is_built(&game, &tools_dir) {
-        let tools = gamebuild::find_tools(&tools_dir).unwrap_or_else(|e| fail(e));
+        let tools = gamebuild::find_tools(&tools_dir, &game).unwrap_or_else(|e| fail(e));
         let job = gamebuild::Job { game_dir: game.clone(), exefs: PathBuf::from(&a[1]), jobs, idle: false, log: None };
         match gamebuild::run(&job, &tools, &cancel, |t| tick(&t.phase, &t.message)) {
             Ok(true) => {}

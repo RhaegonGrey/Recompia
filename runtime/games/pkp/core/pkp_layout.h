@@ -21,6 +21,8 @@ constexpr uint64_t kWorld = 0x34efc98;           // the world ([GOT 0x3483b10] p
 // u32: how many tables it holds (8-byte slots from +0x10; a table at off is there while this is above off / 8, pkp_tables.h).
 constexpr uint64_t kTableCount = 0x2b70;
 constexpr uint64_t kItemTable = 0x638;
+constexpr uint64_t kItemNameId = 0x22;           // item record: u16 name id (1..kNameIdMax, for kNameOf)
+constexpr uint16_t kNameIdMax = 3000;
 
 // ---- the input manager ----
 // Its vector at +0xcd8 (end at +0xce0) maps an action to its button (u32 per action, low byte: 0..3 the d-pad, 4 Y, 5 A, 6 X, 7 B, 8 (-),
@@ -39,6 +41,14 @@ constexpr uint64_t kMouseSwingPos = 0xaa50, kMouseSwingValid = 0xaa84;   // the 
 
 // ---- save data ----
 constexpr uint64_t kSaveHeading = 0x741a10;      // the local player's heading while kPlayerMode and kPlayerModeByte are 0
+// The items (pkp_items.h has a slot's fields, pkp_sort.cpp how they were measured).
+constexpr uint64_t kSaveCommon = 0x13d4920;      // the common block
+constexpr uint64_t kBagOffline = 0x830;          // common block: the bag's slots while offline (m_useItemInventoryOffline)
+constexpr uint32_t kBagSlots = 120;
+
+// ---- items in main ----
+constexpr uint64_t kItemSlotVtable = 0x322c1d8;  // the vtable every item slot holds
+constexpr uint64_t kItemTempFlag = 0x36bbfd8;    // u8 per player: the bag / container screen works on a temp copy (an item is held)
 
 // ---- movement component ----
 constexpr uint64_t kController = 0xbc0;          // the movement controller (embedded)
@@ -50,6 +60,8 @@ constexpr uint64_t kFrameStep = 0xbfc4fc;
 
 // ---- game functions ----
 constexpr uint64_t kOnline = 0x376c4;            // () -> bit 0: Link Play session
+constexpr uint64_t kMaxStack = 0x2a7f0c;         // () -> the max stack (u16), one value for every item
+constexpr uint64_t kNameOf = 0xa34e1c;           // (name id, form) -> UTF-8 name in the game's language
 constexpr uint64_t kLayoutOf = 0x9132fc;         // (source) -> layout
 constexpr uint64_t kChildOf = 0xa6f92c;          // (children (screen + 0x48), element id, u16* class) -> child widget
 constexpr uint64_t kTextString = 0xf35f20;       // (widget, text slot, text id, const char*): a text id with a string argument

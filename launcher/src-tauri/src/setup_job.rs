@@ -2,6 +2,7 @@
 //! First-run setup: the build and shader job on a worker thread, its progress and the preflight checks.
 
 use serde::Serialize;
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -14,7 +15,7 @@ use crate::guard::{ensure_idle, Need};
 use crate::paths::{exe_dir, game_dir_of};
 use crate::readiness::setup_started;
 use crate::shaders::RunState;
-use crate::{dump, gamebuild, host, play, preflight, settings, setuplog, shaders, writecheck};
+use crate::{dump, gamebuild, host, mods, play, preflight, settings, setuplog, shaders, writecheck};
 
 /// Shader setup: the running job's progress and its cancel flag.
 #[derive(Default)]
@@ -53,7 +54,7 @@ pub fn setup_status(app: AppHandle, state: SetupArg) -> SetupStatus {
         progress,
         complete: state == gamebuild::Built::Current && shaders::is_complete(&dir),
         started,
-        rebuild: state == gamebuild::Built::Stale,
+        rebuild: matches!(state, gamebuild::Built::Stale | gamebuild::Built::Relink),
     }
 }
 
@@ -63,14 +64,56 @@ pub fn setup_status(app: AppHandle, state: SetupArg) -> SetupStatus {
 pub fn start_setup(app: AppHandle, state: SetupArg, gentle: Option<bool>) -> Result<(), String> {
     ensure_idle(&app, &[Need::Update, Need::Storage])?;
     let cfg = load_config(&app);
+    // Linux and macOS: the player's dump is the source of everything. The same flow as the Windows Set up, from
+    // host.rs native_set_up_install: pkp.ini from the chosen dump, the tools, the game build, then the shader corpus.
+    if host::native_game() {
+        let dir = game_dir_of(&cfg);
+        fs::create_dir_all(&dir).map_err(|e| format!("cannot create {}: {}", dir.display(), e))?;
+        writecheck::check(&dir).map_err(|e| e.message())?;
+        {
+            let mut p = state.progress.lock().unwrap();
+            if p.state == RunState::Running {
+                return Err("Setup is already running.".into());
+            }
+            *p = shaders::Progress { state: RunState::Running, phase: "check".into(), message: "Checking the setup tools...".into(), ..Default::default() };
+        }
+        let st = state.inner().clone();
+        st.cancel.store(false, Ordering::SeqCst);
+        let slog = Arc::new(setuplog::SetupLog::open(&dir));
+        let log: shaders::LogFn = {
+            let l = slog.clone();
+            Arc::new(move |t: &str| l.line(t))
+        };
+        log(&format!("=== Set up started: launcher {}, {}", env!("CARGO_PKG_VERSION"), host::os_name()));
+        std::thread::spawn(move || {
+            let mut last = (String::new(), 0u64, String::new());
+            let mut emit = |p: shaders::Progress| {
+                if setuplog::progress_worth_logging(&mut last, &p.phase, p.done, p.total, &p.message) && p.state == RunState::Running {
+                    log(&format!("[{}] {}", p.phase, p.message));
+                }
+                *st.progress.lock().unwrap() = p.clone();
+                let _ = app.emit("setup-status", p);
+            };
+            let result = host::native_set_up_install(&cfg, &st.cancel, &mut |phase, done, total, message| {
+                emit(shaders::Progress { state: RunState::Running, phase: phase.to_string(), done, total, message: message.to_string() })
+            });
+            let end = match result {
+                Ok(n) => shaders::Progress { state: RunState::Done, phase: "finish".into(), message: format!("Setup finished: {} shaders translated.", n), ..Default::default() },
+                Err(e) => shaders::Progress { state: RunState::Error, message: e, ..Default::default() },
+            };
+            slog.line(&format!("=== Set up ended: {}{}", end.state, if end.message.is_empty() { String::new() } else { format!(": {}", end.message) }));
+            emit(end);
+        });
+        return Ok(());
+    }
     let gentle = gentle.unwrap_or(cfg.gentle_build);
     let report = dump::scan(&cfg.dump_dir);
     let chosen = report.chosen.ok_or_else(|| "Choose usable game files first.".to_string())?;
     let dir = game_dir_of(&cfg);
     let tools_dir = exe_dir().join("tools");
     let package_b = gamebuild::is_package_b(&tools_dir);
-    if !package_b && !dir.join("pkp.exe").is_file() {
-        return Err(format!("pkp.exe was not found in {}. Put the launcher next to pkp.exe or set the game folder in Settings.", dump::fwd(&dir)));
+    if !package_b && !host::game_exe(&dir).is_file() {
+        return Err(format!("{} was not found in {}. Put the launcher next to {} or set the game folder in Settings.", host::game_exe_name(), dump::fwd(&dir), host::game_exe_name()));
     }
     // a pkp_rt.dll from another release than the tools: the build would finish and the game still refuse to start
     if package_b {
@@ -80,6 +123,10 @@ pub fn start_setup(app: AppHandle, state: SetupArg, gentle: Option<bool>) -> Res
     }
     // the build, the shader tools and pkp.ini all write in the game folder: a blocked one fails here, in words (writecheck.rs)
     writecheck::check(&dir).map_err(|e| e.message())?;
+    // the build puts in the hook points of the mods as they are now (Modtopia's hooks.tsv)
+    if package_b {
+        mods::refresh_plan(&dir)?;
+    }
     {
         let mut p = state.progress.lock().unwrap();
         if p.state == RunState::Running {
@@ -118,19 +165,9 @@ pub fn start_setup(app: AppHandle, state: SetupArg, gentle: Option<bool>) -> Res
             let _ = app.emit("setup-status", p);
         };
         let result = (|| {
-            // Linux: the native Python and Zig that the build and the shader extractor run with, fetched once
-            let tools_ready = host::prepare_tools(&tools_dir, &st.cancel, &mut |done, total, message| {
-                emit(shaders::Progress { state: RunState::Running, phase: "tools".into(), done, total, message })
-            })?;
-            if !tools_ready {
-                return Ok(false);
-            }
-            // Linux: the translator and the hidden run need Proton; say so now, not after the build
-            #[cfg(not(windows))]
-            log(&format!("Windows programs run with: {}", host::runner()?.label));
             // no build yet, or one from an older release (stale tools stamp): build pkp.exe (again)
             if package_b && !gamebuild::is_built(&build_job.game_dir, &tools_dir) {
-                let tools = gamebuild::find_tools(&tools_dir)?;
+                let tools = gamebuild::find_tools(&tools_dir, &build_job.game_dir)?;
                 let built = gamebuild::run(&build_job, &tools, &st.cancel, |t| {
                     emit(shaders::Progress { state: RunState::Running, phase: t.phase, done: t.done, total: t.total, message: t.message })
                 })?;
