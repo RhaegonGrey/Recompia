@@ -137,11 +137,13 @@ struct KThread : KObject {
     std::atomic<uint64_t> nyield{0}, nbackoff{0};   // yield SVCs, and of them the ones that slept (written by the thread, read by the census)
     uint64_t census_yield = 0, census_backoff = 0;  // [diag] yield_census: the counts at the previous summary (under the census lock)
     // wait state, protected by the kernel lock (kernel_sync.cpp)
-    bool wake = false;
-    uint32_t wait_result = 0;
+    std::atomic<bool> wake{false};      // written under the kernel lock; with [kernel] sync_wait = address the woken thread reads it without the lock
+    uint32_t wait_result = 0;           // written before wake is set
+    uint64_t wake_at_ns = 0;            // [diag] sync_stats: when wake was set (qpc), written before it
     uint64_t wait_mutex = 0, wait_key = 0, wait_addr = 0;
     uint32_t wait_tag = 0;
     void* cv_storage[1] = {nullptr};    // CONDITION_VARIABLE is pointer sized: this thread's own wake-up (kernel_sync.cpp)
+    std::atomic<uint32_t> park{0};      // [kernel] sync_wait = address: the word the thread sleeps on; every wake-up adds one under the kernel lock
     void* precise_event = nullptr;      // [sched] precise_waits: the event the thread waits on in a wait's last stretch, set too on a wake
     std::weak_ptr<KThread> self;
     ~KThread() override;                // closes host_handle

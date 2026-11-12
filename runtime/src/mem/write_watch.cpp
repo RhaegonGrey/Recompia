@@ -482,6 +482,30 @@ void invalidate(Region* r, uint64_t first, uint64_t count) {
     if (count) set_bits(r->valid.get(), first, count, false);
 }
 
+// Under the exclusive lock no fault of the region is handled, so bits and protection change together for everybody else, as in arm(). A
+// write that faulted on one of the pages just before finds it writable afterwards and goes on (release_page: not armed, read-write).
+uint64_t owner_write_begin(Region* r, uint64_t first, uint64_t count) {
+    if (!r || first >= r->npages) return 0;
+    count = std::min(count, r->npages - first);
+    ExclusiveLock lk(r);
+    uint64_t n = 0;
+    while (n < count && test(r->valid.get(), first + n) && test(r->prot.get(), first + n) && !test(r->guard.get(), first + n)) ++n;
+    if (!n) return 0;
+    DWORD was = 0;
+    if (!VirtualProtect(reinterpret_cast<void*>(r->base + first * kPage), static_cast<SIZE_T>(n * kPage), PAGE_READWRITE, &was)) return 0;
+    set_bits(r->valid.get(), first, n, false);
+    set_bits(r->prot.get(), first, n, false);
+    return n;
+}
+
+bool owner_write_end(Region* r, uint64_t first, uint64_t count) {
+    if (!r || !count || first >= r->npages || count > r->npages - first) return false;
+    if (arm(r, first, count)) return true;
+    set_bits(r->written.get(), first, count, true);
+    sum_mark(r, first, count);
+    return false;
+}
+
 void set_guard_handler(GuardHandler fn) { g_guard_fn.store(fn, std::memory_order_release); }
 
 bool guard(Region* r, uint64_t first, uint64_t count) {

@@ -120,6 +120,7 @@ struct TextureViewInfo {
     int swizzle[4] = {NVN_TEXTURE_SWIZZLE_R, NVN_TEXTURE_SWIZZLE_G, NVN_TEXTURE_SWIZZLE_B, NVN_TEXTURE_SWIZZLE_A};
     int depth_stencil_mode = 0;
     int target = 0;
+    bool operator==(const TextureViewInfo&) const = default;   // every field (padding is not compared)
 };
 TextureViewInfo decode(const NVNtextureView* v);
 

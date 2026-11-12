@@ -86,6 +86,7 @@ class AudioProcessor {
     }
 
     void Work() {
+        nxrt::log_set_thread_name("audren-dsp");
         BoostAudioThread();
 
         if (_mailbox.ReceiveMessage() != MailboxMessage::Start) {

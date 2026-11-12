@@ -580,3 +580,4 @@ inline V128 clmul64(uint64_t a, uint64_t b) {
 #include "cxx_ldst.h"
 #include "cxx_neon1.h"
 #include "cxx_neon2.h"
+#include "locals.h"

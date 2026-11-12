@@ -23,6 +23,7 @@
 #include "nxrt/module.h"
 #include "nxrt/svc.h"
 #include "kernel_internal.h"
+#include "poll_wait.h"
 
 namespace nxrt {
 namespace {
@@ -187,8 +188,8 @@ void svc_sleep_thread(::Ctx* c) {              // x0 ns (0, -1, -2 = yield varia
         const PollSleeps& p = poll_sleeps();
         ns = poll_sleep_ns(p.table, p.n, p.base, X(c, 30), ns);
     }
-    if (ns > 0) sleep_ns(ns);
-    else guest_yield(c);
+    if (ns <= 0) return guest_yield(c);
+    if (!poll_wait_sleep(*c, ns)) sleep_ns(ns);   // a listed polling loop ([kernel] poll_wait) sleeps until its value changes
 }
 
 void svc_get_thread_priority(::Ctx* c) {       // w1 handle -> w1 priority

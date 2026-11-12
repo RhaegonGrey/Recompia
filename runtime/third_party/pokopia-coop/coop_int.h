@@ -366,7 +366,7 @@ enum { M_AUTH_CHAL = 0x20, M_AUTH_PROOF, M_AUTH_OK, M_AUTH_FAIL };
 enum { RLY_HOST = 1, RLY_JOIN, RLY_ATTACH };
 enum { RLY_OK = 1, RLY_VISITOR, RLY_GONE, RLY_ERR, RLY_PONG, RLY_PING };
 enum { RLY_E_NOROOM = 1, RLY_E_TAKEN, RLY_E_FULL, RLY_E_LIMIT, RLY_E_TIMEOUT, RLY_E_BAD, RLY_E_EXPIRED };
-// pokopia-recomp extension: relay UDP (not in pokopia-native; launcher/src-tauri/src/relay/mod.rs "Relay UDP"). Through a relay pokopia-native
+// pokopia-recomp extension: relay UDP (not in pokopia-native; launcher/relay/src/lib.rs "Relay UDP"). Through a relay pokopia-native
 // sends game datagrams over the TCP link; ours can send them over UDP via a relay that supports it, only when the host, the visitor and the
 // relay all do, so with any pokopia-native build or relay in the session nothing changes on the wire for it. 0xC5 is the one value used:
 // relay hello byte 6 (wants relay UDP; theirs sends 0 and their relay ignores it), relay message type (arg, cookie = the link's u64 token,

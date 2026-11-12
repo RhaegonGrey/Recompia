@@ -217,8 +217,10 @@ void texture_registry_remove(Texture* t);
 void texture_registry_detach_gpu();   // sets Texture::gpu to null on every registered texture (the images are being freed: gpu::tex_shutdown)
 void textures_cpu_wrote(const void* lo, uint64_t size);      // marks every texture whose storage overlaps [lo, lo+size) cpu_dirty and tells the GPU layer
 size_t texture_registry_size();
-// Frame-trace mark with the texture id as its argument (a no-op unless [prof] trace is on): tx.init, tx.write, tx.flush, tx.reg, tx.use.
-void tx_mark(const char* what, const Texture* t);
+// Frame-trace mark with the texture id as its argument (a no-op unless [prof] trace is on): tx.init, tx.write, tx.flush, tx.flushtx, tx.reg,
+// tx.use. The zones are registered once, not looked up by name at each mark.
+enum class TxMark : uint8_t { Init, Write, Flush, FlushTexels, Reg, Use };
+void tx_mark(TxMark what, const Texture* t);
 // Sparse textures: registered by the virtual pool they live in. A remap of tiles (nvnMemoryPoolMapVirtual) or a write to the physical
 // memory behind a tile marks the textures over it CPU-written; texture_gather_virtual builds the bytes of the storage out of the mapped
 // tiles (unmapped tiles are zeros).

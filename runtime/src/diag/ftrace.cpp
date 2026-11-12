@@ -79,13 +79,40 @@ void flush_names_locked() {
 // The events, formatted and written without g_mu. A second of events is about 100 thousand lines, tens of milliseconds; while the lock was
 // held for that long, every thread that records a mark (zone_id takes g_mu) waited for it, so the trace itself made a stall once a second.
 // Only the writer thread, and the stop path after it was joined, touch g_written and the file here.
+// The lines ("t0 dur thread zone arg") are put together by hand in blocks of 64 KiB: a trace of a game in play is a few hundred thousand
+// events a second, and the writer's time is taken from the game being traced, so it does not pay for an fprintf call (stream lock,
+// format parsing) per event.
+char* put_num(char* p, uint64_t v, char after) {
+    char digits[20];
+    int n = 0;
+    do {
+        digits[n++] = static_cast<char>('0' + v % 10);
+        v /= 10;
+    } while (v);
+    while (n) *p++ = digits[--n];
+    *p++ = after;
+    return p;
+}
+
 void flush_events() {
     if (!g_file) return;
     const size_t n = std::min(g_n.load(std::memory_order_acquire), g_cap);
+    constexpr size_t kBlock = 64 * 1024, kLineMax = 20 + 4 * 10 + 5;     // a 64-bit and four 32-bit numbers, each with its separator
+    static char block[kBlock];
+    char* p = block;
     for (; g_written < n; ++g_written) {
+        if (p + kLineMax > block + kBlock) {
+            std::fwrite(block, 1, static_cast<size_t>(p - block), g_file);
+            p = block;
+        }
         const Ev& e = g_ev[g_written];
-        std::fprintf(g_file, "%llu %u %u %u %u\n", static_cast<unsigned long long>(e.t0), e.dur, e.thread, e.zone, e.arg);
+        p = put_num(p, e.t0, ' ');
+        p = put_num(p, e.dur, ' ');
+        p = put_num(p, e.thread, ' ');
+        p = put_num(p, e.zone, ' ');
+        p = put_num(p, e.arg, '\n');
     }
+    if (p != block) std::fwrite(block, 1, static_cast<size_t>(p - block), g_file);
     std::fflush(g_file);
 }
 
@@ -95,6 +122,7 @@ void flush_locked() {
 }
 
 void writer_main() {
+    log_set_thread_name("ftrace-writer");
     while (!g_stop.load()) {
         for (int i = 0; i < 10 && !g_stop.load(); ++i) Sleep(100);
         {
@@ -253,6 +281,7 @@ double tsc_per_ns() {
 }
 
 void sampler_main(std::string path) {
+    log_set_thread_name("ftrace-stall");
     FILE* f = std::fopen(path.c_str(), "wb");
     if (!f) return;
     const double tpn = tsc_per_ns();

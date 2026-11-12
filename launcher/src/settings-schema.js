@@ -306,17 +306,15 @@ const GAMEPLAY = {
     after: [{ id: 'camera_aim_note', type: 'note', when: isOn('camera_aim'), note: () => ({ text: t('Abilities and tools aim where the camera looks instead of where your character faces, and your character turns to the target when the ability starts.') }) }],
   },
   title_quit: { label: 'Quit Game on the title screen' },
-  pokemon_cap_50: {
-    label: 'Extended Pokemon residents',
-    after: [{ id: 'pokemon_cap_limit', label: 'Resident Pokemon limit', type: 'slider', step: 1,
-      when: isOn('pokemon_cap_50'), ...fromSchema(pkp('pkp', 'pokemon_cap_limit')) },
-      { id: 'pokemon_cap_pool_note', type: 'note', when: isOn('pokemon_cap_50'),
-        note: () => ({ text: 'Experimental: the game has a 64-slot actor pool. At the maximum, no additional actor slots are reserved for visitors or item-triggered spawns. Takes effect next launch.' }) }],
-  },
   camera_aim_reach: { label: t('Extra reach in blocks'), options: (k) => Array.from({ length: k.max - k.min + 1 }, (_, n) => n + k.min).map((n) => ({ value: String(n), label: n === 0 ? t('Off') : num(n) })) },
   inventory_sort: { label: t('Sort button in the bag and containers') },
   inventory_autosort: { label: t('Sort each time the bag opens') },
   craft_search: { label: t('Search in the crafting screen') },
+  pokemon_cap_50: {
+    label: t('More Pokémon in town'),
+    after: [{ id: 'pokemon_cap_note', type: 'note', when: isOn('pokemon_cap_50'), note: () => ({ text: t('Experimental. Visitors and temporary spawns share the game\'s 64 slots with your residents, so a high number leaves them less room.') }) }],
+  },
+  pokemon_cap_limit: { label: t('Pokémon in town'), options: (k) => Array.from({ length: k.max - k.min + 1 }, (_, n) => n + k.min).map((n) => ({ value: String(n), label: num(n) })) },
 };
 
 const gameplaySchema = () => SCHEMAS.pkp.sections.find((s) => s.name === 'pkp').keys.filter((k) => k.group === 'gameplay');

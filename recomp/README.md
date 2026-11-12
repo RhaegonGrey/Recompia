@@ -26,6 +26,7 @@ Python is `tools\.venv\Scripts\python.exe` at the repository root (3.13; package
 
     python -m nxrecomp lift  <module.nso|prog.elf> <outdir> [--game pkp] [--base 0x7100000000] [--name main] [--index N]
                              [--shards 16] [--jobs 8] [--patches FILE] [--sites FILE] [--spin-yield]
+                             [--locals off|exact|aapcs]
     python -m nxrecomp cover <module.nso|prog.elf> [--game pkp]      per-instruction-word translation coverage of .text
     python -m nxrecomp.funcs <module> --out functions.tsv             function boundaries and the evidence for each
     python -m nxrecomp build-info [--game pkp]                       the game's module table and the compile flags (JSON)
@@ -33,7 +34,8 @@ Python is `tools\.venv\Scripts\python.exe` at the repository root (3.13; package
 In a CMake build (the game), `cmake/NxRecomp.cmake` gives `nxrecomp_add_module(<target> INPUT <file> ...)`, which
 lifts as a build step and builds the result as a static library (flags from `nxrecomp/compile_flags.py`, shared with the
 player build: C++20, `-fno-strict-aliasing`, `-ffp-contract=off`, `-mcx16`; optnone for functions over `optnone_insns`
-instructions; `NX_USE_LAUNCHER` adds a time-limit fallback; `NX_SPIN_YIELD` passes `--spin-yield`), and
+instructions; `NX_USE_LAUNCHER` adds a time-limit fallback; `NX_SPIN_YIELD` passes `--spin-yield`; `NX_LOCALS`, or the
+environment variable of that name at configure time, passes `--locals`), and
 `nxrecomp_build_info(<game> <prefix>)` reads the module table of `games/<game>/config.py`. Presets:
 `cmake --preset default`.
 
@@ -46,6 +48,13 @@ instructions; `NX_USE_LAUNCHER` adds a time-limit fallback; `NX_SPIN_YIELD` pass
 - Instruction lifting has two tiers. Tier 1 (`lift/a64.py`) decodes bit fields and is the reference where it applies. Tier 2
   (`lift/tier2/`) is Capstone-driven and covers what tier 1 does not: LSE atomics, crypto, the long tail of AdvSIMD, structure
   loads and stores. The files `x_*.py` there override or add handlers; the ported emitters beside them are kept as the base.
+- `locals.py` (`--locals`, game config `reg_locals`, default `off`) keeps the guest X registers and NZCV in C locals of each
+  lifted function and syncs them with the context only where other code can see it: before every call, trap and runtime
+  callout, at every return and tail exit. `exact` leaves the context there as the eager code does; `aapcs` also keeps NZCV out
+  of the context at calls and returns, as AAPCS64 allows, and the lift log lists the flag reads where that could differ; `off`
+  is the eager code. Between two sync points the context of a running thread is behind the locals, so a report that reads
+  another thread's context shows its registers as of the last call. The player build takes the mode from the game config
+  (`PKP_LOCALS` overrides it for a test build) and keeps it in its build stamp.
 - `spin.py` finds busy-wait loops (a short backward branch whose loop only loads, computes and branches and carries nothing
   from one pass to the next) and lifts their loads as relaxed atomic loads (`rdp*`, `rdvp`, `nx::ld_poll`), so the compiler
   can neither hoist them nor drop the loop. `--spin-yield` (game config `spin_yield`) also calls `nx_spin_hint(2)` at each

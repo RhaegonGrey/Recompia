@@ -351,7 +351,7 @@ fn is_progress_line(l: &str) -> bool {
 /// Runs a tool, handing each stdout line to `line`; kills it when `cancel` is set. Ok(true) = exit 0, Ok(false) = cancelled.
 /// `log` gets the command line, the tool's stderr and non-progress stdout, and on failure the end of its output.
 /// `limit`: killed after that long, an error.
-fn run_tool(mut cmd: Command, cancel: &AtomicBool, idle: bool, log: Option<&LogFn>, limit: Option<Duration>, mut line: impl FnMut(&str)) -> Result<bool, String> {
+pub(crate) fn run_tool(mut cmd: Command, cancel: &AtomicBool, idle: bool, log: Option<&LogFn>, limit: Option<Duration>, mut line: impl FnMut(&str)) -> Result<bool, String> {
     quiet(&mut cmd, idle);
     let name = cmd.get_program().to_string_lossy().to_string();
     let say = |t: &str| {
@@ -429,28 +429,6 @@ fn run_tool(mut cmd: Command, cancel: &AtomicBool, idle: bool, log: Option<&LogF
             return Err(format!("{} did not end in time", name));
         }
     }
-}
-
-/// What the harness writes in its `--out` folder when a run fails (`ErrorFile` in tools/shaders/harness/Program.cs).
-const HARNESS_ERROR: &str = "harness_error.txt";
-
-/// `run_tool` for the shader translator writing to `stage`. Under Proton its stdout and stderr never reach the launcher (#366), so
-/// a failure is explained from `stage`: the harness's own error file, or, with no `stage` folder at all, that it never started.
-fn run_harness(cmd: Command, stage: &Path, cancel: &AtomicBool, idle: bool, log: Option<&LogFn>, line: impl FnMut(&str)) -> Result<bool, String> {
-    run_tool(cmd, cancel, idle, log, None, line).map_err(|e| {
-        let why = match fs::read_to_string(stage.join(HARNESS_ERROR)) {
-            Ok(t) => format!("The shader translator reported:\n{}", t.trim()),
-            Err(_) if !stage.is_dir() => {
-                "The shader translator never started (it creates its output folder first): the program that runs it (Proton or Wine) failed before it."
-                    .to_string()
-            }
-            Err(_) => "The shader translator started but wrote no error report.".to_string(),
-        };
-        if let Some(f) = log {
-            f(&why);
-        }
-        format!("{}\n{}", e, why)
-    })
 }
 
 /// Header + rows of a tsv file (rows without the trailing newline).
@@ -562,11 +540,10 @@ pub fn translate_missing(game_dir: &Path, tools_dir: &Path) -> Result<usize, Str
         text.push('\n');
     }
     fs::write(input.join("manifest.tsv"), text).map_err(|e| format!("cannot write {}: {}", input.display(), e))?;
-    let jobs = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(2).to_string();
-    let mut cmd = crate::host::windows_program(&tools_dir.join("spirv_harness").join("spirv_harness.exe"))?;
-    cmd.arg("--batch").arg(crate::host::win_path(&input)).arg("--out").arg(crate::host::win_path(&stage)).args(["--jobs", &jobs, "--no-val"]);
-    cmd.env("DOTNET_gcServer", "1");
-    if !run_harness(cmd, &stage, &AtomicBool::new(false), false, None, |_| {})? {
+    let jobs = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(2);
+    let exe = tools_dir.join("spirv_harness").join("spirv_harness.exe");
+    let mut mode = crate::harness::Mode::Fast;
+    if !crate::harness::run(&exe, &input, &stage, jobs, &mut mode, &AtomicBool::new(false), false, None, |_| {})? {
         return Err("the shader translator stopped".into());
     }
     let n = commit_stage(&stage, &spirv)?;
@@ -654,7 +631,6 @@ pub fn run(job: &Job, tools: &Tools, cancel: &AtomicBool, mut report: impl FnMut
     }
     marker.complete = false;
     write_marker(&job.game_dir, &marker)?;
-    let jobs = job.jobs.max(1).to_string();
     let extract_jobs = job.jobs.clamp(1, EXTRACT_JOBS).to_string();
     let p = |phase: &str, done: u64, total: u64, message: String| Progress { state: RunState::Running, phase: phase.into(), done, total, message };
 
@@ -738,6 +714,7 @@ pub fn run(job: &Job, tools: &Tools, cancel: &AtomicBool, mut report: impl FnMut
     let total = urows.len() as u64;
     let mut finished = (urows.len() - urows.iter().filter(|r| !done.contains(first_col(r))).count()) as u64;
     report(p("translate", finished, total, format!("Translating shaders: {} of {}", finished, total)));
+    let mut mode = crate::harness::Mode::Fast;   // Safe from the first batch that needed it on (harness::run)
     for chunk in todo.chunks(CHUNK) {
         let mut f = fs::File::create(corpus.join("unique.tsv")).map_err(|e| e.to_string())?;
         writeln!(f, "{}", uheader).map_err(|e| e.to_string())?;
@@ -745,13 +722,8 @@ pub fn run(job: &Job, tools: &Tools, cancel: &AtomicBool, mut report: impl FnMut
             writeln!(f, "{}", r).map_err(|e| e.to_string())?;
         }
         drop(f);
-        let _ = fs::remove_dir_all(&stage);
-        let mut cmd = crate::host::windows_program(&tools.harness)?;
-        cmd.arg("--batch").arg(crate::host::win_path(&corpus)).arg("--out").arg(crate::host::win_path(&stage)).args(["--jobs", &jobs, "--no-val"]);
-        // server GC: with the default workstation GC each collection stops every worker (about 4x slower)
-        cmd.env("DOTNET_gcServer", "1");
         let base = finished;
-        let ok = run_harness(cmd, &stage, cancel, job.idle, job.log.as_ref(), |l| {
+        let ok = crate::harness::run(&tools.harness, &corpus, &stage, job.jobs, &mut mode, cancel, job.idle, job.log.as_ref(), |l| {
             // "  <n>/<count>  <s> s" every 500 blocks
             if let Some(n) = l.trim().split('/').next().and_then(|x| x.parse::<u64>().ok()) {
                 report(p("translate", base + n, total, format!("Translating shaders: {} of {}", base + n, total)));

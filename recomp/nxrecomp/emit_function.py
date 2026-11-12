@@ -3,6 +3,7 @@
 import bisect
 
 from .lift import Lifter, Unimpl, bits
+from . import locals as localsmod
 from . import spin as spinmod
 
 
@@ -75,10 +76,31 @@ def lift_function(env, entry):
         cold = 'NX_OPTNONE '
     elif entry in env.sites['noinline'] or entry in env.sites['entryhook'] or entry in env.sites['midhook']:
         cold = '__attribute__((noinline)) '
+    if not lines[-1][1].startswith(TAILS) and end < env.text_hi and end in env.ends:
+        trailer = 'f_%x(c); return;' % end                 # falls through into the next listed function
+        env.wanted.setdefault(end, None)
+    elif not lines[-1][1].startswith(TAILS):
+        trailer = 'guest_trap("fell off the end of a function", 0x%xULL); return;' % end
+    else:
+        trailer = 'return;'
+    decl = None
+    if env.locals:                                           # registers and NZCV in C locals (locals.py)
+        skip = 'optnone' if cold.startswith('NX_OPTNONE') else 'unresolved br' if fn.has_br_fallback else None
+        held = None
+        if env.locals == localsmod.LEAN and env.flags_table is None and fn.has_br_fallback:
+            brs = [pc for pc, t in lines if 'goto ' + localsmod.LABEL_DISPATCH in t]
+            if brs and all(b in env.br_plain for b in brs):
+                held = env.lean_held                         # the dispatch reaches only addresses the program holds
+        res = localsmod.apply(lines, trailer, pads, env.locals, env.locals_stats, skip, entry, env.flags_table,
+                              env.locals_summaries, held, env.lean_flows)
+        if res:
+            lines, trailer, decl = res
     out = ['%svoid %s_%x(Ctx *__restrict c%s) {' % (cold, 'u' if two else 'f', entry, ', uint64_t rp' if two else ''),
            '  c->fn = 0x%xULL;' % entry]
     if entry in env.sites['entryhook']:
         out.append('  if (nx_hook_entry(c, 0x%xULL)) return;' % entry)
+    if decl:                                                 # after the entry hook: it may change registers and flags
+        out.append('  ' + decl)
     if fn.has_br_fallback:
         out.append('  uint64_t jt = 0;')
     if pads:
@@ -90,16 +112,7 @@ def lift_function(env, entry):
         needed = {pc for pc, _ in lines}
     for pc, stmt in lines:
         out.append(('L_%x: %s' % (pc, stmt)) if pc in needed else '  ' + stmt)
-    last = lines[-1][1]
-    ends_open = not last.startswith(TAILS)
-    listed = env.ends
-    if ends_open and end < env.text_hi and end in listed:
-        out.append('  f_%x(c); return;' % end)           # falls through into the next listed function
-        env.wanted.setdefault(end, None)
-    elif ends_open:
-        out.append('  guest_trap("fell off the end of a function", 0x%xULL); return;' % end)
-    else:
-        out.append('  return;')
+    out.append('  ' + trailer)
     if fn.has_br_fallback:
         out.append('L_dispatch: switch (jt) {')
         out.extend('  case 0x%xULL: goto L_%x;' % (pc, pc) for pc, _ in lines)

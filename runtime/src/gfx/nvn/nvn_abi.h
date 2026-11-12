@@ -21,6 +21,7 @@
 #include <type_traits>
 #include <utility>
 
+#include "nvn_api_stats.h"
 #include "nxrt/abi.h"
 #include "nxrt/dispatch.h"
 #include "nxrt/nvn.h"
@@ -136,6 +137,7 @@ struct Thunk<Fn> {
     static constexpr char kRet = class_of<R>();
     static constexpr char kArgs[sizeof...(A) + 1] = {class_of<A>()..., '\0'};
     static void call(::Ctx* c) {
+        const uint64_t t0 = api_stats::on() ? ft::tsc() : 0;   // [prof] render_split: time inside the NVN function (nvn_api_stats.h)
         ArgReader rd{c};
         if constexpr (std::is_void_v<R>) {
             std::apply(Fn, std::tuple<A...>{rd.template next<A>()...});
@@ -143,6 +145,7 @@ struct Thunk<Fn> {
             R r = std::apply(Fn, std::tuple<A...>{rd.template next<A>()...});
             write_result<R>(c, r);
         }
+        if (t0) api_stats::note_call(ft::tsc() - t0);          // before the game's memory callback: that is game code
         if (t_cmdmem_pending) cmdmem_run_pending(c);
     }
 };

@@ -5,6 +5,7 @@ import collections
 
 from .lift import bits, sext
 from . import eh as ehmod
+from . import locals as localsmod
 from . import spin as spinmod
 from .sites import SITE_KINDS
 
@@ -38,6 +39,15 @@ class Env:
         self.spin = False             # find spin loops and lift their loads as poll loads (spin.py; off while discovering)
         self.spin_yield = False       # ... and call nx_spin_hint(2) at their heads
         self.spin_stats = spinmod.Stats()
+        self.locals = None            # None, 'exact', 'aapcs' or 'lean': registers and NZCV in C locals (locals.py; off while discovering)
+        self.locals_stats = localsmod.Stats()
+        self.flags_table = None       # 'lean': {entry: (NEEDS_IN, NEEDS_OUT, KILLS)} (locals.solve); None in the summary pass,
+        self.locals_summaries = {}    # ... which fills this: {entry: locals.summarize()}
+        self.br_plain = set()         # 'lean': unresolved `br`s whose target takes no table arithmetic (jumptables.bound_dispatch)
+        self.lean_held = frozenset()  # 'lean': the code addresses the module's data and relocations hold (driver.held_code)
+        self.lean_flows = {}          # 'lean': {entry: flag flow} the summary pass keeps for the rewrite (locals.apply)
+        self.lean_cache = None        # ... in files in this folder, one per group of entries starting at lean_chunks
+        self.lean_chunks = []
         self._syms = None
 
     # ---- words

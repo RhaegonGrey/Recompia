@@ -136,6 +136,9 @@ struct DescriptorBinding {
     // without using it; the harness's record lists only used resources (checked on the whole cache), so
     // describe_like_harness skips the unused ones.
     bool used = false;
+    // Storage buffers: false when no instruction of the module can write the block (reflect_spirv: every use of the variable, and of
+    // the access chains made from it, is another access chain, a load or an array length). True for the rest, and when in doubt.
+    bool may_write = true;
 };
 
 struct ShaderIo {

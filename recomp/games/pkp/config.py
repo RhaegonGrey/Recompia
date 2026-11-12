@@ -29,5 +29,7 @@ class Config(GameConfig):
         ModuleSpec('rtld', 0x7700000000, 'rtld', shards=1, entry=True),
     ]
     overrides = {}
+    # registers and flags in C locals, flags stored around calls only where a module summary says they can be read (nxrecomp/config.py)
+    reg_locals = 'lean'
     # rtld's process entry (0x0) has no FDE, symbol or direct branch, so discovery never roots it (runtime/docs/S6.md)
     extra_entries = {'rtld': [0x0]}

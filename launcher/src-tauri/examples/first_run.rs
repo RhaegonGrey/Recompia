@@ -7,6 +7,8 @@
 #[allow(dead_code)]
 #[path = "../src/gamebuild.rs"]
 mod gamebuild;
+#[path = "../src/harness.rs"]
+mod harness;
 #[allow(dead_code)]
 #[path = "../src/host.rs"]
 mod host;

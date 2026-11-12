@@ -37,6 +37,14 @@ bool page_valid(const Region* r, uint64_t page);
 bool page_banned(const Region* r, uint64_t page);
 // Owner: the owner changed the pages itself (the GPU wrote them): no longer valid, still armed (the next arm() re-validates them).
 void invalidate(Region* r, uint64_t first, uint64_t count);
+// The owner writes pages of its region itself, with bytes its own copy of them holds too (the NVN back end copies GPU results from a
+// pool's shadow into guest memory), and wants them to stay valid. Any thread, but never beside region_destroy.
+// begin: returns how many pages from `first` on (at most `count`) are valid; 0 when the first one is not. Those become writable without
+// counting as written, and are neither armed nor valid until end. A CPU write to them between begin and end is not seen: the caller
+// compares what it must. Other regions over the same pages are not told: the caller reports the write to them with before_os_write.
+// end: the pages of a begin are armed and valid again. False: they could not be armed, and count as written.
+uint64_t owner_write_begin(Region* r, uint64_t first, uint64_t count);
+bool owner_write_end(Region* r, uint64_t first, uint64_t count);
 // Owner: appends the pages written by the CPU since the last call (page indices) and clears that record.
 void take_written(Region* r, std::vector<uint64_t>& out);
 // take_written reads only the words a summary bitmap marks (on, default) or every word of the region (off; [nvn] setup_coalesce = false).

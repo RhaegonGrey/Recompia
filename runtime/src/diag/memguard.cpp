@@ -153,6 +153,7 @@ void write_limit_report(uint64_t footprint, uint64_t limit) {
 }
 
 void guard_loop(Settings s) {
+    log_set_thread_name("memguard");
     const double limit_gb = static_cast<double>(s.limit) / kBytesPerGb;
     auto next_log = Clock::now() + std::chrono::seconds(30);
     bool warned = false;

@@ -2,7 +2,7 @@
 """python -m nxrecomp <command> ...   (see README.md)
 
   lift   <input> <outdir> [--game NAME] [--kind nso|nx_elf|static_elf] [--base 0x..] [--name N] [--jobs J] [--shards S]
-         [--patches FILE] [--spin-yield]   lift every function of one module
+         [--patches FILE] [--spin-yield] [--locals off|exact|aapcs|lean]   lift every function of one module
   cover  <input> [--game NAME] ...   per-instruction-word translation coverage of .text
   build-info [--game NAME]   one JSON line: the game's module table and the compile flags of the lifted code (for CMake)
   module-header --game NAME --out FILE   the C++ header of the module list (modheader.py), for the builds of the lifted game
@@ -19,7 +19,7 @@ def spec_from(a):
         magic = open(a.input, 'rb').read(4)
         kind = 'nso' if magic == b'NSO0' else 'static_elf'
     return {'kind': kind, 'path': a.input, 'base': int(a.base, 16), 'name': a.name, 'game': a.game, 'patches': a.patches, 'sites': a.sites, 'index': a.index,
-            'spin_yield': getattr(a, 'spin_yield', False) or None}
+            'spin_yield': getattr(a, 'spin_yield', False) or None, 'locals': getattr(a, 'locals', None)}
 
 
 def build_info(game):
@@ -32,6 +32,7 @@ def build_info(game):
 
 
 def main(argv=None):
+    from .config import REG_LOCALS
     ap = argparse.ArgumentParser(prog='nxrecomp')
     sub = ap.add_subparsers(dest='cmd', required=True)
     p = sub.add_parser('build-info')
@@ -47,6 +48,8 @@ def main(argv=None):
             p.add_argument('--jobs', type=int, default=8)
             p.add_argument('--shards', type=int, default=0)
             p.add_argument('--spin-yield', action='store_true', help='spin-loop heads call nx_spin_hint(2) (default: the game config)')
+            p.add_argument('--locals', choices=REG_LOCALS,
+                           help='guest registers and flags in C locals (locals.py; modes: config.py reg_locals); default: the game config')
         p.add_argument('--game', default='generic')
         p.add_argument('--kind', choices=['nso', 'nx_elf', 'static_elf'])
         p.add_argument('--base', default='0x7100000000')

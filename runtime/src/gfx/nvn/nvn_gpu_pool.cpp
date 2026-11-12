@@ -459,9 +459,10 @@ bool lazy_import_cells(PoolGpu* g, PoolChunk& x, uint64_t xo, uint64_t xs) {
     const uint16_t fails = x.fails;
     const uint32_t since = x.fail_since;
     const size_t c0 = static_cast<size_t>(xo / g->stride);
-    bool ok = g->copy && pcopy_alloc(g, x, xo, xs, "copy cell");
+    bool ok = g->copy && pcopy_alloc(g, x, xo, xs, "copy cell", true);
     if (ok && retry) import_recovered(g, x, fails, since, "copy cell", c0, g->cell_ext.size());
     if (!ok) {
+        if (g->copy) pcopy_track_stop(g);                          // an import must not see pages the copy tracker made read-only
         std::lock_guard<std::mutex> ilk(tex_arm_import_mutex());   // no arm of the worker in between
         mem::ww::forget(reinterpret_cast<uint64_t>(g->base) + xo, xs, false);
         ok = import_range(g, x, xo, xs, "lazy chunk", c0, g->cell_ext.size());
@@ -891,6 +892,7 @@ void pool_gpu_destroy(PoolGpu* p) {
         if (c.buffer) g_lz_live_bytes.fetch_sub(static_cast<int64_t>(c.size), std::memory_order_relaxed);
         destroy_chunk(c);
     }
+    if (p->copy) pcopy_pool_destroy(p);
     delete p;
 }
 

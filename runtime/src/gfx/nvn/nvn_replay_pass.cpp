@@ -141,7 +141,12 @@ float attach_targets(bool fix) {
 // Starts a pass on the current render targets if none is open for them. False when there is nothing to render to. fbl: the colour slots
 // that are in the feedback loop layout (a pass in another layout mode is ended: the layouts and the pipelines' feedback flag go together).
 bool ensure_pass(bool depth_ro, uint8_t fbl) {
-    if (P.open && targets_match() && P.depth_ro == depth_ro && P.fbl == fbl) return true;
+    // Every draw comes through here. The targets are compared only after a SetRenderTargets (the game often sets the ones it has): a
+    // target is made from S's target fields, which only that op writes, and from fields of the texture that never change after its init.
+    if (P.open && P.depth_ro == depth_ro && P.fbl == fbl && (P.targets_gen == S.targets_gen || targets_match())) {
+        P.targets_gen = S.targets_gen;
+        return true;
+    }
     end_pass(true);
     if (!g_bar.pending.empty()) {
         bool conflict = false;
@@ -159,6 +164,7 @@ bool ensure_pass(bool depth_ro, uint8_t fbl) {
     P.depth_ro = depth_ro;
     P.scale = pass_scale;
     P.fbl = fbl;
+    P.targets_gen = S.targets_gen;
     VkRenderingAttachmentInfo colors[8] = {};
     VkRenderingAttachmentInfo depth = {VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
     VkRenderingAttachmentInfo stencil = {VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};

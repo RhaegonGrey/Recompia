@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-//! Room codes (mod.rs "Room codes"): 16 symbols of Crockford base32, 80 bits, shown as XXXX-XXXX-XXXX-XXXX. The relay never sees
+//! Room codes (lib.rs "Room codes"): 16 symbols of Crockford base32, 80 bits, shown as XXXX-XXXX-XXXX-XXXX. The relay never sees
 //! a code (clients send a key derived from it); the launcher only makes, checks and shows codes.
 //! From pokopia-native (MIT), windows/src/coop/coop_auth.c @7c3655d: the alphabet, the input rules and the display format.
 
@@ -47,7 +47,7 @@ pub fn new_code() -> std::io::Result<String> {
 }
 
 #[cfg(windows)]
-pub(crate) fn os_random(buf: &mut [u8]) -> std::io::Result<()> {
+pub fn os_random(buf: &mut [u8]) -> std::io::Result<()> {
     const BCRYPT_USE_SYSTEM_PREFERRED_RNG: u32 = 2;
     #[link(name = "bcrypt")]
     extern "system" {
@@ -61,7 +61,7 @@ pub(crate) fn os_random(buf: &mut [u8]) -> std::io::Result<()> {
 }
 
 #[cfg(not(windows))]
-pub(crate) fn os_random(buf: &mut [u8]) -> std::io::Result<()> {
+pub fn os_random(buf: &mut [u8]) -> std::io::Result<()> {
     use std::io::Read;
     std::fs::File::open("/dev/urandom")?.read_exact(buf)
 }

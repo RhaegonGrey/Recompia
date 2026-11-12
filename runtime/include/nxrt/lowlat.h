@@ -81,8 +81,15 @@ private:
 // Frame pacing placement (S18, [latency] pace = main | present, env NXRT_LATENCY_PACE; default main). With "main" the frame limiter waits at the game's frame
 // boundary, before the input is sampled, and not inside the present call: the frame that is shown was simulated one render time before, not one
 // queue depth before. The presenting thread still runs the limiter for a present that no boundary paced (loading screens, movies).
+// The presents that make the next boundary wait due are counted where the game calls present ([latency] boundary_count = game, default), so every
+// game frame gets exactly one wait, at the first main-loop pass after its present call. With `render` they are counted when the render thread
+// presents, which runs about one frame behind the game ([nvn] present_ahead): when that present came after the game's present call, the boundary
+// right after it was not due, the next main-loop pass (in the middle of the following frame) waited instead, and the frame after that got no
+// wait (Steam Deck, cap 45: 35-40 ms / 15 ms interval pairs, 3 % of the intervals standing still).
 bool pace_in_main();
-void pace_note_present();         // presenting thread: a frame was presented
+void pace_note_present();         // render thread: a frame was presented (counted with boundary_count = render)
+uint32_t pace_note_game_present();   // game thread, at its present call (counted with boundary_count = game); returns the boundary waits since the
+                                     // previous call: 1 per frame when the pacing is right
 bool pace_boundary_due();         // main thread: true when a frame was presented since the boundary last waited (the game's main loop runs more
                                   // iterations than it presents frames: waiting in each of them paced the game below the cap); the first call is due
 void pace_boundary_done();        // main thread: the boundary hook ran the limiter wait for the frame it starts

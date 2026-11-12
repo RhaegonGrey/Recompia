@@ -8,11 +8,17 @@
 //   mode auto, internet true, no relay     Internet host without a relay (router forwards 47600). A visitor cannot use this, so it opens as Host.
 //   mode join:<ip>, internet true, code    Internet visit without a relay.
 //   protocol linkplay                      the old relay Link Play. Any Link Play choice writes protocol = native; the toggles do not (as before).
+// Internet goes through PUBLIC_RELAY unless the player turns on Advanced > Use my own relay or address (`server` 'own', kept in
+// localStorage while nothing is written yet); a file whose relay is another address, or with no relay, opens in 'own'.
 // `[net] server` belongs to the old protocol and is never written here.
 import { t } from './i18n.js';
 
 export const HOST_PORT = 47600;
 export const RELAY_PORT = 47610;
+
+/** The project's public relay (launcher/relay, run as a service): where Internet hosts open their rooms and visitors find them. IPv4 only:
+ *  the game's [net] relay takes no host name (coop_cfg_parse_ex). */
+export const PUBLIC_RELAY = '168.138.90.76:47610';
 
 const truthy = (s) => /^(1|true|yes|on)$/i.test((s || '').trim());
 const net = (key, value) => ({ file: 'pkp', section: 'net', key, value });
@@ -89,27 +95,34 @@ export const viewOf = (n) => (isOff(n) ? 'off' : n.internet ? 'internet' : 'lan'
 /** Does the file already host over the internet (mode auto, internet on)? New code writes straight into it. */
 export const hostsOverInternet = (n) => viewOf(n) === 'internet' && !joinOf(n);
 
-/** The page's state for this file and this browser's memory. `mem` is localStorage: { role, through, hostCode, visitCode, joinAddr, joinCode, relayAddr }. */
+/**
+ * The page's state for this file and this browser's memory. `mem` is localStorage: { server, role, through, hostCode, visitCode, joinAddr,
+ * joinCode, relayAddr }. `relayAddr` is only ever an own relay: the public one is never remembered, so Advanced opens with the player's own.
+ */
 export function uiFrom(pkp, mem = {}) {
   const n = readIni(pkp);
   const view = viewOf(n);
   const internet = view === 'internet';
   const join = joinOf(n);
   const direct = internet && !!join;
+  const pub = internet && n.relay === PUBLIC_RELAY;
+  const server = internet ? (pub ? 'public' : 'own') : mem.server === 'own' ? 'own' : 'public';
   const role = direct ? 'visit' : internet && !n.relay ? 'host' : mem.role === 'visit' ? 'visit' : 'host';
-  const through = direct ? false : internet && n.relay ? true : mem.through !== false;
-  const remembered = (s) => (validAddr(s) ? s : '');
+  const through = direct ? false : internet && n.relay && !pub ? true : mem.through !== false;
+  const remembered = (s) => (validAddr(s) && s !== PUBLIC_RELAY ? s : '');
   const memRelay = remembered(mem.relayAddr);
+  const ownRelay = pub ? '' : n.relay;
   return {
     view,
+    server,
     role,
     through,
     legacy: n.legacy,
     lanJoin: view === 'lan' ? join : '',
     lastJoin: remembered(mem.joinAddr),
     hostCode: internet && role === 'host' ? realCode(n.code) : mem.hostCode || '',
-    relay: internet && !direct ? n.relay : n.relay || memRelay,
-    visitAddr: direct ? join : internet && n.relay ? n.relay : through ? memRelay : remembered(mem.joinAddr),
+    relay: internet && !direct && !pub ? ownRelay : ownRelay || memRelay,
+    visitAddr: direct ? join : internet && ownRelay ? ownRelay : through ? memRelay : remembered(mem.joinAddr),
     visitCode: internet && role === 'visit' ? n.code : (through ? mem.visitCode : mem.joinCode) || '',
     interact: n.interact || n.story,
     story: n.story,
@@ -169,6 +182,13 @@ export function editsFor(ui, pkp) {
     const addr = ui.lanJoin.trim();
     if (addrProblem(addr, { lan: true, remote: true })) return null;
     edits = lanEdits(addr);
+  } else if (ui.server === 'public') {
+    if (ui.role === 'host') edits = hostEdits(PUBLIC_RELAY, ui.hostCode);
+    else {
+      const code = ui.visitCode.trim();
+      if (!code) return null;
+      edits = visitEdits(PUBLIC_RELAY, code, true);
+    }
   } else if (ui.role === 'host') {
     const relay = ui.relay.trim();
     if (addrProblem(relay, { port: RELAY_PORT })) return null;

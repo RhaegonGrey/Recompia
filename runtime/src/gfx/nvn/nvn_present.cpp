@@ -10,6 +10,7 @@
 #include "nxrt/diag.h"
 #include "nxrt/extras.h"
 #include "nxrt/lowlat.h"
+#include "nxrt/present_timing.h"
 #include "extras/output_pass.h"
 #include "nxrt/frame_limiter.h"
 #include "nxrt/gauge.h"
@@ -88,7 +89,8 @@ void present_on_render_thread(Window* w, int index, bool again) {
             present_give_back();    // [nvn] one_submit: not held back by the limiter's wait
             NXFT("limiter");
             nxrt::HitchTimer ht(nxrt::kHpRenderLimiter);
-            lim->begin_frame_nohook();
+            const uint64_t released = lim->begin_frame_nohook();
+            if (!again) extras::present_timing_present_release(released);
         }
     }
     if (!again) {

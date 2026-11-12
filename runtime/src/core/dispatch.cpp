@@ -18,6 +18,7 @@
 #include "nxrt/config.h"
 #include "nxrt/log.h"
 #include "nxrt/memory.h"
+#include "../diag/hle_census.h"
 
 namespace nxrt {
 namespace {
@@ -285,6 +286,59 @@ void trap(const char* what, uint64_t addr) {
     for (;;) {}
 }
 
+namespace {
+// An HLE thunk's call: its handler, or the logging stub's answer.
+void call_thunk(::Ctx* c, Thunk& t) {
+    const char* saved = t_hle_name;
+    t_hle_name = t.name.c_str();
+    // [hle] trace: the line is written after the handler ran, so it carries the result (x0) next to the arguments
+    const HleTrace& tr = hle_trace();
+    const bool traced = !tr.prefix.empty() && t.name.compare(0, tr.prefix.size(), tr.prefix) == 0;
+    uint64_t targs[4] = {};
+    int64_t tseq = 0;
+    if (traced) {
+        tseq = const_cast<HleTrace&>(tr).seq.fetch_add(1, std::memory_order_relaxed) + 1;
+        for (int i = 0; i < 4; i++) targs[i] = reg(c, i);
+    }
+    if (t.fn) {
+        if (ft::on()) {
+            // frame trace: HLE calls (services, NVN entry points) of at least 100 us. Timed with the TSC: a frame makes thousands of
+            // these calls (most of them NVN, on one game thread) and two QueryPerformanceCounter reads with their conversion to ns
+            // cost several times more. 100 us is at least 100,000 ticks of any TSC of 1 GHz or more, so a shorter call (nearly all)
+            // costs two TSC reads and nothing else; a longer one gets the event in the trace's clock, ending now.
+            const uint64_t c0 = ft::tsc();
+            t.fn(c);
+            const uint64_t dc = ft::tsc() - c0;
+            if (dc >= 100000) {
+                const uint64_t d = ft::tsc_to_ns(dc), t1 = ft::now_ns();
+                if (d >= 100000) {
+                    int z = t.ft_zone.load(std::memory_order_relaxed);
+                    if (z < 0) { z = ft::zone_id(("hle:" + t.name).c_str()); t.ft_zone.store(z, std::memory_order_relaxed); }
+                    ft::event(static_cast<uint16_t>(z), t1 - d, t1, 0);
+                }
+            }
+        } else {
+            t.fn(c);
+        }
+    } else {
+        // No handler: the console would fault on an unresolved import. A silent 0 is a fake answer, so say so (every
+        // call up to 20, then every 1000th) and return 0.
+        const uint64_t n = t.calls.fetch_add(1, std::memory_order_relaxed) + 1;
+        if (n <= 20 || n % 1000 == 0)
+            NXLOG_W("hle", "UNIMPLEMENTED import %s called (call #%llu, lr=0x%llx, x0=0x%llx x1=0x%llx): returning 0",
+                    t.name.c_str(), static_cast<unsigned long long>(n), static_cast<unsigned long long>(lr(c)),
+                    static_cast<unsigned long long>(reg(c, 0)), static_cast<unsigned long long>(reg(c, 1)));
+        reg(c, 0) = 0;
+    }
+    if (traced && tseq <= tr.limit)
+        NXLOG_I("hle-trace", "#%lld %s(x0=0x%llx x1=0x%llx x2=0x%llx x3=0x%llx) lr=0x%llx -> 0x%llx", static_cast<long long>(tseq), t.name.c_str(),
+                static_cast<unsigned long long>(targs[0]), static_cast<unsigned long long>(targs[1]), static_cast<unsigned long long>(targs[2]),
+                static_cast<unsigned long long>(targs[3]), static_cast<unsigned long long>(lr(c)), static_cast<unsigned long long>(reg(c, 0)));
+    t_hle_name = saved;
+}
+
+}  // namespace
+
 void dispatch_call(::Ctx* c, uint64_t addr) {
     // HLE thunks live in their own address range, away from every lifted function: no hash lookup for them
     const bool in_hle_range = addr - mem::kHleBase < mem::kHleSize;
@@ -308,47 +362,12 @@ void dispatch_call(::Ctx* c, uint64_t addr) {
         }
     }
     if (hle_is_thunk(addr)) {
-        Thunk& t = *g_thunks[thunk_index(addr)];
-        const char* saved = t_hle_name;
-        t_hle_name = t.name.c_str();
-        // [hle] trace: the line is written after the handler ran, so it carries the result (x0) next to the arguments
-        const HleTrace& tr = hle_trace();
-        const bool traced = !tr.prefix.empty() && t.name.compare(0, tr.prefix.size(), tr.prefix) == 0;
-        uint64_t targs[4] = {};
-        int64_t tseq = 0;
-        if (traced) {
-            tseq = const_cast<HleTrace&>(tr).seq.fetch_add(1, std::memory_order_relaxed) + 1;
-            for (int i = 0; i < 4; i++) targs[i] = reg(c, i);
+        const size_t i = thunk_index(addr);
+        if (diag::census::on()) [[unlikely]] {   // [diag] hle_census
+            diag::census::Scope scope(diag::census::key(diag::census::kHle, static_cast<uint32_t>(i)));
+            return call_thunk(c, *g_thunks[i]);
         }
-        if (t.fn) {
-            if (ft::on()) {
-                const uint64_t t0 = ft::now_ns();
-                t.fn(c);
-                const uint64_t t1 = ft::now_ns();
-                if (t1 - t0 >= 100000) {       // frame trace: HLE calls (services, NVN entry points) of at least 100 us
-                    int z = t.ft_zone.load(std::memory_order_relaxed);
-                    if (z < 0) { z = ft::zone_id(("hle:" + t.name).c_str()); t.ft_zone.store(z, std::memory_order_relaxed); }
-                    ft::event(static_cast<uint16_t>(z), t0, t1, 0);
-                }
-            } else {
-                t.fn(c);
-            }
-        } else {
-            // No handler: the console would fault on an unresolved import. A silent 0 is a fake answer, so say so (every
-            // call up to 20, then every 1000th) and return 0.
-            const uint64_t n = t.calls.fetch_add(1, std::memory_order_relaxed) + 1;
-            if (n <= 20 || n % 1000 == 0)
-                NXLOG_W("hle", "UNIMPLEMENTED import %s called (call #%llu, lr=0x%llx, x0=0x%llx x1=0x%llx): returning 0",
-                        t.name.c_str(), static_cast<unsigned long long>(n), static_cast<unsigned long long>(lr(c)),
-                        static_cast<unsigned long long>(reg(c, 0)), static_cast<unsigned long long>(reg(c, 1)));
-            reg(c, 0) = 0;
-        }
-        if (traced && tseq <= tr.limit)
-            NXLOG_I("hle-trace", "#%lld %s(x0=0x%llx x1=0x%llx x2=0x%llx x3=0x%llx) lr=0x%llx -> 0x%llx", static_cast<long long>(tseq), t.name.c_str(),
-                    static_cast<unsigned long long>(targs[0]), static_cast<unsigned long long>(targs[1]), static_cast<unsigned long long>(targs[2]),
-                    static_cast<unsigned long long>(targs[3]), static_cast<unsigned long long>(lr(c)), static_cast<unsigned long long>(reg(c, 0)));
-        t_hle_name = saved;
-        return;
+        return call_thunk(c, *g_thunks[i]);
     }
     trap("indirect call to an address that is not a known function", addr);
 }

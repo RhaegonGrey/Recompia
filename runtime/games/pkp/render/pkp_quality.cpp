@@ -71,7 +71,7 @@ constexpr Preset kPresets[] = {
     {"switch2", 0.0, 0, false, 0, 0, gfx::ShadowQuality::Default, extras::AaMode::Off},
     {"high", -0.5, 8, false, 0, 0, gfx::ShadowQuality::High, extras::AaMode::SmaaHigh},
     {"ultra", -1.0, 16, false, 0, 0, gfx::ShadowQuality::VeryHigh, extras::AaMode::SmaaUltra},
-    {"steamdeck", 0.0, 4, true, 75, 40, gfx::ShadowQuality::Default, extras::AaMode::Off},    // 1440 x 810 for the 1280 x 800 screen; 40 fps: runs at 40 where the refresh is a multiple (80 Hz OLED / 40 Hz LCD in Steam's Performance menu), else at 30 (90 Hz OLED default)
+    {"steamdeck", 0.0, 4, true, 75, 40, gfx::ShadowQuality::Default, extras::AaMode::Off},    // 1440 x 810 for the 1280 x 800 screen; 40 fps. The preset does not set vsync: with vsync off (the default) the limiter runs at 40 on its own clock whatever the refresh rate. Only with vsync on does the cap snap ([display] fps_snap): 40 where the refresh is a multiple (80 Hz OLED / 40 Hz LCD in Steam's Performance menu), else the next divisor down (30 at 90 Hz and at 60 Hz)
     {"legion_go_s", 0.0, 8, true, 80, 60, gfx::ShadowQuality::Default, extras::AaMode::Off},  // 1536 x 864 for the 1920 x 1200 screen, 60 fps
     {"laptop", 0.0, 4, true, 75, 60, gfx::ShadowQuality::Default, extras::AaMode::Off},       // integrated / entry graphics: fewer pixels, 60 fps
     {"desktop", -0.5, 16, true, 0, -1, gfx::ShadowQuality::VeryHigh, extras::AaMode::SmaaHigh},     // a dedicated GPU: the window's size (at least 1080p), the display's refresh rate

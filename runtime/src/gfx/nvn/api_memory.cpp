@@ -19,6 +19,7 @@
 #include "nvn_core.h"
 #include "nvn_gpu.h"
 #include "nvn_impl.h"
+#include "nxrt/config.h"
 #include "nxrt/ftrace.h"
 #include "nxrt/gauge.h"
 #include "nxrt/log.h"
@@ -192,6 +193,7 @@ void nvnMemoryPoolFlushMappedRange(const NVNmemoryPool* pool, ptrdiff_t offset, 
     if (!p || !p->base) return;
     uint64_t start = 0;
     const uint64_t n = clip_range(offset, size, p->size, start);
+    api_stats::count(api_stats::kFlush);
     if (n) textures_cpu_wrote(p->base + start, n);
 }
 
@@ -324,6 +326,7 @@ void nvnBufferFlushMappedRange(const NVNbuffer* buffer, ptrdiff_t offset, size_t
     if (!map) return;
     uint64_t start = 0;
     const uint64_t n = clip_range(offset, size, d.size, start);
+    api_stats::count(api_stats::kFlush);
     if (n) textures_cpu_wrote(map + start, n);
 }
 
@@ -361,6 +364,20 @@ uint64_t nvnBufferGetDebugID(const NVNbuffer* buffer) {
 }
 
 // ---- texture pools ---------------------------------------------------------------------------------------------------------
+// [nvn] pool_reg_skip_same (default true): a texture or sampler registration that finds the same entry already in its slot (the same
+// texture object and view, or a bit-identical sampler) is not written again. Nothing a handle resolves to changes, so it takes no
+// exclusive lock (which waits for the replay's readers) and does not bump g_bind_gen and g_tex_scan_epoch: the replay's descriptor
+// set memos ([nvn] set_reuse) and textures_note_bound's per-thread memo stay valid. The same Texture* is the same object: the entry holds a
+// reference, so a new texture cannot be made at that address while the old one is in the slot. false: every registration is written.
+bool pool_reg_skip_same() {
+    static const bool on = [] {
+        const bool v = config_get_bool("nvn", "pool_reg_skip_same", true);
+        NXLOG_I(kTag, "pool registrations: %s ([nvn] pool_reg_skip_same)", v ? "one that finds the same entry in its slot is skipped" : "every one is written again");
+        return v;
+    }();
+    return on;
+}
+
 NVNboolean nvnTexturePoolInitialize(NVNtexturePool* pool, const NVNmemoryPool* memory, ptrdiff_t offset, int count) {
     if (!pool) return 0;
     MemoryPool* mem = pool_of_guest(memory);
@@ -404,15 +421,31 @@ void texture_pool_register(const NVNtexturePool* pool, int id, const NVNtexture*
     }
     Texture* t = host_of<Texture>(texture);
     const TextureViewInfo info = view ? decode(view) : TextureViewInfo{};
+    const bool has_view = view != nullptr;
+    TexturePool::Entry& e = tp->entries[static_cast<size_t>(id)];   // entries is sized once, by Initialize
+    api_stats::count(api_stats::kTexReg);
+    if (pool_reg_skip_same() || api_stats::on()) {
+        bool same;
+        {
+            std::shared_lock<std::shared_mutex> sl(tp->lock);   // never waits for the replay's readers, only for a writer
+            same = e.used && e.tex.get() == t && e.has_view == has_view && e.view == info;
+        }
+        if (same) {
+            api_stats::count(api_stats::kTexRegSame);
+            if (pool_reg_skip_same()) {
+                if (t && gpu::active()) gpu::texture_registered(t);   // the background preparation hint, as below
+                return;
+            }
+        }
+    }
     std::unique_lock<std::shared_mutex> lk(tp->lock, std::defer_lock);
     { NXFT("tex.pool_register.lock"); lk.lock(); }      // the wait for readers of the pool's entries (a draw resolving texture ids)
-    TexturePool::Entry& e = tp->entries[static_cast<size_t>(id)];
     e.tex = Ref<Texture>::share(t);
     e.view = info;
-    e.has_view = view != nullptr;
+    e.has_view = has_view;
     if (!e.used) g_texture_handles.add(1);
     e.used = true;
-    be::tx_mark("tx.reg", t);
+    be::tx_mark(be::TxMark::Reg, t);
     be::g_tex_scan_epoch.fetch_add(1, std::memory_order_relaxed);   // a new texture sits behind this id now
     be::g_bind_gen.fetch_add(1, std::memory_order_relaxed);
     if (t && gpu::active()) gpu::texture_registered(t);   // registered: it is going to be sampled (background preparation, nvn_texprep.h)
@@ -483,6 +516,18 @@ void sampler_pool_store(const NVNsamplerPool* pool, int id, const SamplerInfo& i
     if (id < 0 || id >= sp->count) {
         NVN_WARN_ONCE("nvnSamplerPoolRegister: a sampler id outside the pool is ignored");
         return;
+    }
+    api_stats::count(api_stats::kSmpReg);
+    if (pool_reg_skip_same() || api_stats::on()) {
+        bool same;
+        {
+            std::shared_lock<std::shared_mutex> sl(sp->lock);
+            same = sp->used[static_cast<size_t>(id)] && sp->entries[static_cast<size_t>(id)] == info;   // bit-exact (SamplerInfo::operator==)
+        }
+        if (same) {
+            api_stats::count(api_stats::kSmpRegSame);
+            if (pool_reg_skip_same()) return;
+        }
     }
     std::unique_lock<std::shared_mutex> lk(sp->lock);
     sp->entries[static_cast<size_t>(id)] = info;

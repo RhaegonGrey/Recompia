@@ -27,6 +27,7 @@
 #include <cstring>
 #include <vector>
 
+#include "nxrt/early_wake.h"
 #include "nxrt/extras.h"
 #include "nxrt/game.h"
 #include "nvn_cmd.h"
@@ -287,6 +288,7 @@ void nvnQueuePresentTexture(NVNqueue* queue, NVNwindow* window, int index) {
         NXLOG_W(kTag, "nvnQueuePresentTexture: index %d is not one of the %zu window textures; not presented", index, w->textures.size());
         return;
     }
+    api_stats::frame();
     be::gpu::present(w, index);
 }
 
@@ -349,8 +351,12 @@ NVNsyncWaitResult nvnSyncWait(const NVNsync* sync, uint64_t timeout_ns) {
     const uint64_t serial = s->serial.load();
     // timeout 0 is the guest polling (acquire sync, queue fence, plain polls): [nvn] poll_flush decides when such a poll flushes the batch.
     const bool poll = timeout_ns == 0;
+    const uint32_t wake = kernel::early_wake_token();   // before the poll reads the timeline: a completion from here on ends the sleep
     if (serial == 0 || be::gpu::serial_done(serial, poll ? be::gpu::PollKind::Sync : be::gpu::PollKind::Wait)) return NVN_SYNC_WAIT_RESULT_ALREADY_SIGNALED;
-    if (poll) return NVN_SYNC_WAIT_RESULT_TIMEOUT_EXPIRED;
+    if (poll) {
+        be::gpu::sync_wake_want(wake);   // the game sleeps a short time and polls again: [kernel] early_wake ends that sleep on completion
+        return NVN_SYNC_WAIT_RESULT_TIMEOUT_EXPIRED;
+    }
     return be::gpu::wait_serial(serial, timeout_ns) ? NVN_SYNC_WAIT_RESULT_CONDITION_SATISFIED
                                                     : NVN_SYNC_WAIT_RESULT_TIMEOUT_EXPIRED;
 }

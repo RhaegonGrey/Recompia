@@ -214,6 +214,7 @@ struct CommandBuffer : Obj {
     // block's end and the game added nothing since, because on the console the out-of-memory callback would hand over more)
     // is placed in a ring of this buffer's own made-up addresses (kOverflowAddrBase), so the overlap rule still ends it.
     uint64_t overflow_base = 0, overflow_pos = 0;
+    size_t last_list_bytes = 0;                      // record bytes of the list ended last: the next list reserves that much at once
     std::vector<uint64_t> handles;                   // handles of the lists recorded here (released at Finalize)
     Device* device = nullptr;
     std::string label;

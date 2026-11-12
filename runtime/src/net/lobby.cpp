@@ -428,6 +428,7 @@ private:
     }
 
     void read_loop() {
+        log_set_thread_name("lobby-read");
         tcp::Handle h;
         {
             std::lock_guard<std::mutex> lk(mu_);
@@ -588,6 +589,7 @@ private:
     }
 
     void ping_loop() {
+        log_set_thread_name("lobby-ping");
         uint32_t nonce = 0;
         std::unique_lock<std::mutex> lk(mu_);
         while (!stop_ && connected_) {
@@ -620,6 +622,7 @@ private:
 
     // The v3 UDP datagram path (lobby.h, RelayClient). Owns the UDP socket; game threads only read udp_sock_ / udp_up_ to send.
     void udp_loop() {
+        log_set_thread_name("lobby-udp");
         using clock = std::chrono::steady_clock;
         uint32_t ip;
         {

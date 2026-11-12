@@ -340,7 +340,7 @@ void tex_ensure_current(Texture* t, Frame& f) {
         if (arm_later) tex_ww_arm_later(t, *g, have_hash, content_hash);
         g->untiled = true;
         ft::mark("tex.untile", t->id);
-        be::tx_mark("tx.use", t);
+        be::tx_mark(be::TxMark::Use, t);
         g->uploaded = true;
         g->gpu_written = false;
         texprep::note_uploaded(t);
@@ -380,7 +380,7 @@ void tex_ensure_current(Texture* t, Frame& f) {
         caps.provisional = texprep::wants_provisional(t);
         ok = prepare_texture(*t, caps, prep);
     }
-    be::tx_mark("tx.use", t);
+    be::tx_mark(be::TxMark::Use, t);
     {
         static const bool log_uploads = nxrt::config_get_bool("nvn", "tex_prep_log", false);      // [nvn] tex_prep_log = 1: one line per upload with where the data came from
         if (log_uploads)

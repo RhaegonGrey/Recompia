@@ -179,6 +179,7 @@ void queue_url(std::string url) {
     if (!q.started) {
         q.started = true;
         std::thread([] {
+            log_set_thread_name("steam-url");
             SteamQueue& w = steam_queue();
             for (;;) {
                 std::string u;

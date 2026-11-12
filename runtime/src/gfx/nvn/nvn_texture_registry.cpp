@@ -11,6 +11,7 @@
 #include "nxrt/gauge.h"
 #include "nvn_texdata.h"
 #include "nxrt/log.h"
+#include "nvn_api_stats.h"
 #include "nvn_format.h"
 #include "nvn_gpu.h"
 
@@ -35,8 +36,15 @@ void texture_registry_remove(Texture* t) {
         if (it->second == t) { g_by_start.erase(it); break; }
 }
 
-void tx_mark(const char* what, const Texture* t) {
-    if (t && ft::on()) ft::mark(what, t->id);
+void tx_mark(TxMark what, const Texture* t) {
+    if (!t || !ft::on()) return;
+    // ft::mark(name) looks the name up in the zone list under the trace's lock at every call (a linear scan of a few hundred names,
+    // 1-2 us); the game thread marks every registration and flush, so the ids are made once here (in TxMark order)
+    static const uint16_t ids[] = {ft::zone_id("tx.init"), ft::zone_id("tx.write"), ft::zone_id("tx.flush"), ft::zone_id("tx.flushtx"),
+                                   ft::zone_id("tx.reg"), ft::zone_id("tx.use")};
+    static_assert(sizeof ids / sizeof ids[0] == static_cast<size_t>(TxMark::Use) + 1, "one zone per TxMark");
+    const uint64_t now = ft::now_ns();
+    ft::event(ids[static_cast<size_t>(what)], now, now, t->id);
 }
 
 void tev(const Texture* t, const char* what, uint64_t a, uint64_t b) {
@@ -174,8 +182,10 @@ void textures_cpu_wrote(const void* lo, uint64_t size) {
     ft::Scope zs(zid);       // arg: textures hit
     const uint64_t a = reinterpret_cast<uint64_t>(lo), b = a + size;
     std::vector<Ref<Texture>> hit;
+    uint64_t looked = 0;   // registry entries looked at ([prof] render_split, nvn_api_stats.h)
     {
         std::lock_guard<std::mutex> lk(g_mu);
+        looked += g_virtual.size();
         // sparse textures whose mapped tiles lie in the written physical memory
         for (Texture* t : g_virtual) {
             MemoryPool* vp = t->vpool.get();
@@ -204,6 +214,7 @@ void textures_cpu_wrote(const void* lo, uint64_t size) {
         auto it = g_by_start.upper_bound(b - 1);
         while (it != g_by_start.begin()) {
             --it;
+            ++looked;
             Texture* t = it->second;
             const uint64_t ts = it->first, te = ts + std::max<uint64_t>(t->storage_size, 1);
             if (te > a && ts < b) { t->ref(); hit.emplace_back(t); }
@@ -211,8 +222,10 @@ void textures_cpu_wrote(const void* lo, uint64_t size) {
         }
     }
     zs.set_arg(static_cast<uint32_t>(hit.size()));
+    api_stats::count(api_stats::kFlushScan, looked);
+    api_stats::count(api_stats::kFlushHit, hit.size());
     for (auto& t : hit) {
-        tx_mark("tx.flush", t.get());
+        tx_mark(TxMark::Flush, t.get());
         tev(t.get(), "cpu_wrote", reinterpret_cast<uint64_t>(lo), size);
         t->cpu_dirty.store(true);
         gpu::mark_texture_cpu_dirty(t.get());

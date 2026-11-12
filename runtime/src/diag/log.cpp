@@ -13,6 +13,7 @@
 #include <cstring>
 #include <mutex>
 #include <string>
+#include <vector>
 
 namespace nxrt {
 namespace {
@@ -36,6 +37,22 @@ unsigned g_since_flush = 0;
 long long g_t0 = 0;         // QueryPerformanceCounter at log_init
 
 thread_local char t_name[64] = {};
+
+// The same names by host thread id (log_each_thread_name). One entry per thread id: a new thread that gets the id of an ended one replaces
+// its entry when it is named, which bounds the table.
+struct ThreadName {
+    uint32_t tid = 0;
+    uint64_t created = 0;
+    char name[sizeof t_name] = {};
+};
+struct ThreadNames {
+    std::mutex m;
+    std::vector<ThreadName> v;
+};
+ThreadNames& thread_names() {
+    static ThreadNames* n = new ThreadNames;   // never destroyed: threads are named and read during static destruction too
+    return *n;
+}
 
 struct Resolved {
     std::string path;
@@ -141,9 +158,30 @@ const char* log_path() {
     return g_path.c_str();  // valid until the next log_init or log_shutdown
 }
 
-void log_set_thread_name(const char* name) { std::snprintf(t_name, sizeof t_name, "%s", name ? name : ""); }
+void log_set_thread_name(const char* name) {
+    std::snprintf(t_name, sizeof t_name, "%s", name ? name : "");
+    ThreadName e;
+    e.tid = GetCurrentThreadId();
+    FILETIME created, exited, kernel_t, user_t;
+    if (GetThreadTimes(GetCurrentThread(), &created, &exited, &kernel_t, &user_t)) e.created = static_cast<uint64_t>(created.dwHighDateTime) << 32 | created.dwLowDateTime;
+    std::memcpy(e.name, t_name, sizeof e.name);
+    ThreadNames& n = thread_names();
+    std::lock_guard<std::mutex> lk(n.m);
+    for (ThreadName& o : n.v)
+        if (o.tid == e.tid) {
+            o = e;
+            return;
+        }
+    n.v.push_back(e);
+}
 
 const char* log_thread_name() { return t_name; }
+
+void log_each_thread_name(void (*fn)(uint32_t host_tid, uint64_t created, const char* name, void* user), void* user) {
+    ThreadNames& n = thread_names();
+    std::lock_guard<std::mutex> lk(n.m);
+    for (const ThreadName& e : n.v) fn(e.tid, e.created, e.name, user);
+}
 
 LogLevel log_parse_level(const char* s, LogLevel fallback) {
     if (!s) return fallback;

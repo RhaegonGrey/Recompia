@@ -9,7 +9,7 @@ TexCopies g_copies;
 bool resolve_once_on() {
     static const bool on = [] {
         const bool v = nxrt::config_get_bool("nvn", "resolve_once", true);
-        NXLOG_I(kTag, "texture bindings: %s ([nvn] resolve_once)", v ? "resolved once per draw" : "resolved by every caller");
+        NXLOG_I(kTag, "texture bindings: %s ([nvn] resolve_once)", v ? "a handle is resolved once per pool state" : "resolved by every caller");
         return v;
     }();
     return on;
@@ -52,20 +52,18 @@ TexResolved resolve_texture(const BindingDesc& d) {
         const int idx = b.nvn.index;
         if (idx >= 0 && idx < 16) handle = handle_texture_id(S.img[d.nvn_stage][idx]);   // texture id only (image_as_texture ignores the sampler)
     }
-    const ProgLayout* pl = g_rc.pl;
-    if (!pl || &d < pl->bindings.data() || &d >= pl->bindings.data() + pl->bindings.size()) return resolve_handle(handle);
-    ResolveSlot& sl = g_rc.slots[static_cast<size_t>(&d - pl->bindings.data())];
+    static const bool on = resolve_once_on();
+    if (!on) return resolve_handle(handle);
+    ResolveSlot& sl = g_rc.slot[(handle * 0x9e3779b97f4a7c15ull) >> 55];
     const uint64_t gen = be::g_bind_gen.load(std::memory_order_acquire);   // before the resolve: a write after it is seen next time
-    if (sl.stamp == g_rc.stamp && sl.gen == gen && sl.handle == handle && sl.tpool == S.tpool.get() && sl.spool == S.spool.get()) {
+    if (sl.pools == g_rc.pools && sl.gen == gen && sl.handle == handle) {
         ft::split_count(ft::kCntResolveHit);
         return sl.r;
     }
     sl.r = resolve_handle(handle);
-    sl.stamp = g_rc.stamp;
     sl.gen = gen;
     sl.handle = handle;
-    sl.tpool = S.tpool.get();
-    sl.spool = S.spool.get();
+    sl.pools = g_rc.pools;
     return sl.r;
 }
 

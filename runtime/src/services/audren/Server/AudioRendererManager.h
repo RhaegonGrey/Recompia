@@ -246,6 +246,7 @@ class AudioRendererManager {
 
     // C# SendCommands (the worker main function): dispatches every session's commands to the AudioProcessor, one frame at a time.
     void SendCommandsWorker() {
+        nxrt::log_set_thread_name("audren-cmd");
         BoostAudioThread();
         TimerResolutionScope::Acquire();
         NXLOG_I("AudioRenderer", "Starting audio renderer");

@@ -61,6 +61,7 @@ namespace {
 
 // The display's vsync: a host thread signals the event at 60 Hz. Started by the first GetDisplayVsyncEvent, stopped by vi_nv_reset().
 void vsync_main() {
+    log_set_thread_name("vi-vsync");
     ViState& s = vi();
     std::unique_lock<std::mutex> lk(s.mu);
     while (!s.vsync_stop) {

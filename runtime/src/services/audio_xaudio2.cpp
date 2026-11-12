@@ -554,6 +554,7 @@ void XAudio2Sink::enter_standin() {
 
 // Worker thread: tries create_device() with growing pauses until it works or close() stops it.
 void XAudio2Sink::recover_main() {
+    log_set_thread_name("audio-recover");
     unsigned failures = 0;
     for (;;) {
         {

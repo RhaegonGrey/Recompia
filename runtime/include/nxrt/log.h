@@ -29,6 +29,10 @@ bool log_enabled(LogLevel l);          // l <= current level
 const char* log_path();                // path of the file actually open ("" when none)
 void log_set_thread_name(const char* name);   // copied; shown in the line prefix of this thread
 const char* log_thread_name();
+// Every name given with log_set_thread_name, for a reader on another thread: fn(host thread id, the thread's creation time as GetThreadTimes
+// reports it (FILETIME as 64 bits, 0 when unknown), name, user). A thread that ended stays listed until its id is named again, so a caller
+// that holds a thread by handle compares the creation time before it trusts the name. fn runs under the table's lock: it must not log.
+void log_each_thread_name(void (*fn)(uint32_t host_tid, uint64_t created, const char* name, void* user), void* user);
 LogLevel log_parse_level(const char* s, LogLevel fallback);
 
 void logv(LogLevel l, const char* tag, const char* fmt, va_list ap);

@@ -14,6 +14,7 @@
 #include "nxrt/frame_limiter.h"
 #include "nxrt/ftrace.h"
 #include "nxrt/log.h"
+#include "nxrt/present_timing.h"
 
 namespace nxrt::extras {
 namespace {
@@ -24,6 +25,7 @@ std::atomic<bool (*)(int, uint64_t)> g_gpu_wait_fn{nullptr};
 std::atomic<uint64_t> g_boundary_paced_ns{0};
 std::atomic<uint64_t> g_presents{0};
 uint64_t g_boundary_presents = ~0ull;     // main thread only
+std::atomic<uint32_t> g_boundary_waits{0};   // boundary waits since the game's last present call
 std::atomic<double> g_cap_fps{0};
 
 uint64_t now_us() { return FrameLimiter::now_ns() / 1000ull; }
@@ -149,14 +151,30 @@ bool pace_in_main() {
     static const bool v = config_get_str("latency", "pace", "main") != "present";
     return v;
 }
-void pace_note_present() { g_presents.fetch_add(1, std::memory_order_relaxed); }
+// [latency] boundary_count: where the presents that make a boundary wait due are counted (lowlat.h, pace_note_game_present)
+static bool pace_count_game() {
+    static const bool v = config_get_str("latency", "boundary_count", "game") != "render";
+    return v;
+}
+void pace_note_present() {
+    if (!pace_count_game()) g_presents.fetch_add(1, std::memory_order_relaxed);
+}
+uint32_t pace_note_game_present() {
+    if (pace_count_game()) g_presents.fetch_add(1, std::memory_order_relaxed);
+    return g_boundary_waits.exchange(0, std::memory_order_relaxed);
+}
 bool pace_boundary_due() {
     const uint64_t n = g_presents.load(std::memory_order_relaxed);
     if (n == g_boundary_presents) return false;
     g_boundary_presents = n;
     return true;
 }
-void pace_boundary_done() { g_boundary_paced_ns.store(FrameLimiter::now_ns(), std::memory_order_relaxed); }
+void pace_boundary_done() {
+    const uint64_t t = FrameLimiter::now_ns();
+    g_boundary_paced_ns.store(t, std::memory_order_relaxed);
+    g_boundary_waits.fetch_add(1, std::memory_order_relaxed);
+    present_timing_release(t);
+}
 bool pace_boundary_consume() {
     // A recent boundary wait, not a count: presents and boundaries need not pair up (loading screens present without a boundary, the main loop
     // can run a boundary without a present), and a count that drifts makes the presenting thread take a second slot of the same schedule.
@@ -190,7 +208,9 @@ LowLatency::LowLatency(gfx::Device& dev) : impl_(new Impl) {
     s.ab_period_s = config_get_double("latency", "ab_toggle_s", 0.0);     // test aid, not a user setting
     if (s.ab_period_s > 0) s.ab_next_ns = FrameLimiter::now_ns() + static_cast<uint64_t>(s.ab_period_s * 1e9);
     s.active = enabled_ || s.paced || s.cfg.log_timings;
-    NXLOG_I(kTag, "frame pacing: %s (frames_ahead %d)", pace_in_main() ? "limiter at the frame boundary" : "limiter in the present call", s.cfg.frames_ahead);
+    NXLOG_I(kTag, "frame pacing: %s (frames_ahead %d)%s", pace_in_main() ? "limiter at the frame boundary" : "limiter in the present call", s.cfg.frames_ahead,
+            !pace_in_main() ? "" : pace_count_game() ? ", one boundary wait per game present ([latency] boundary_count = game)"
+                                                     : ", boundary waits counted from the render thread's presents ([latency] boundary_count = render)");
     if (enabled_) {
         s.sci.latencyModeEnable = s.reflex ? VK_TRUE : VK_FALSE;
         if (s.reflex) {

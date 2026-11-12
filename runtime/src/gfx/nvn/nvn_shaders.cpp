@@ -409,6 +409,84 @@ void derive_meaning(DescriptorBinding& b, ShaderStage stage) {
 
 }  // namespace
 
+namespace {
+// The variables of `roots` that some instruction may write through. Memory behind a variable is reached only through a pointer, and
+// every pointer into it is the variable's id or the result of an access chain based on one. A variable is left out (never written) only
+// when every operand of every code instruction that is one of those ids is the base of an access chain, the pointer of an OpLoad or the
+// structure of an OpArrayLength. Any other use counts as a write: stores, atomics, memory copies, call arguments, selects, phis,
+// extended instructions, image texel pointers and every instruction this list does not know. A literal operand that happens to equal
+// such an id counts too, except at the literal positions of the common instructions listed below: a miss there only loses a
+// read-only answer, never gives a wrong one.
+std::unordered_set<uint32_t> written_vars(const uint32_t* words, size_t count, const std::vector<uint32_t>& roots) {
+    enum : uint32_t {
+        OpLine = 8, OpExtInst = 12, OpFunction = 54, OpLoad = 61, OpStore = 62, OpArrayLength = 68, OpVectorShuffle = 79,
+        OpCompositeExtract = 81, OpCompositeInsert = 82, OpImageSampleImplicitLod = 87, OpImageRead = 98, OpImageWrite = 99,
+        OpLoopMerge = 246, OpSelectionMerge = 247, OpBranchConditional = 250, OpSwitch = 251,
+    };
+    std::unordered_set<uint32_t> written;
+    if (roots.empty()) return written;
+    std::unordered_map<uint32_t, uint32_t> root_of;   // pointer id -> its variable
+    for (uint32_t v : roots) root_of[v] = v;
+    for (bool grew = true; grew;) {                   // a chain's base is defined before it in every valid module: one round, then a check
+        grew = false;
+        for (size_t i = 5; i < count;) {
+            const uint32_t wc = words[i] >> 16, op = words[i] & 0xffff;
+            if (wc == 0 || i + wc > count) break;
+            const uint32_t* w = words + i + 1;
+            if ((op == OpAccessChain || op == OpInBoundsAccessChain) && wc >= 4) {
+                const auto it = root_of.find(w[2]);
+                if (it != root_of.end()) {
+                    const uint32_t var = it->second;
+                    if (root_of.emplace(w[1], var).second) grew = true;
+                }
+            }
+            i += wc;
+        }
+    }
+    // operand k of `op` is a literal, not an id
+    const auto literal = [](uint32_t op, size_t k) {
+        switch (op) {
+        case OpExtInst: return k == 3;
+        case OpLoad: return k >= 3;
+        case OpStore: return k >= 2;
+        case OpVectorShuffle: case OpCompositeInsert: return k >= 4;
+        case OpCompositeExtract: return k >= 3;
+        case OpImageWrite: return k == 3;
+        case OpLoopMerge: return k >= 2;
+        case OpSelectionMerge: return k == 1;
+        case OpBranchConditional: return k >= 3;
+        case OpSwitch: return k >= 2 && (k - 2) % 2 == 0;
+        case OpFunction: return k == 2;
+        default: break;
+        }
+        if (op >= OpImageSampleImplicitLod && op <= OpImageRead) {   // the image operands mask after the fixed operands
+            const uint32_t o = op - OpImageSampleImplicitLod;        // implicit, explicit, dref implicit, dref explicit, 4 x proj, fetch, gather, dref gather, read
+            const bool dref = o == 2 || o == 3 || o == 6 || o == 7 || o == 9 || o == 10;
+            return k == (dref ? 5u : 4u);
+        }
+        return false;
+    };
+    for (size_t i = 5; i < count;) {
+        const uint32_t wc = words[i] >> 16, op = words[i] & 0xffff;
+        if (wc == 0 || i + wc > count) break;
+        const uint32_t* w = words + i + 1;
+        const size_t n = wc - 1;
+        // names, debug lines, extensions, the entry point's interface, types, constants and decorations use no pointer
+        const bool code = !(op <= OpLine || op == 10 || op == 11 || (op >= 14 && op <= 17) || (op >= 19 && op <= 52) || (op >= 71 && op <= 75) ||
+                            op == 317 || (op >= 330 && op <= 332));
+        for (size_t k = op == OpVariable ? 3 : 0; code && k < n; ++k) {   // a variable: only its initializer is a use
+            const auto it = root_of.find(w[k]);
+            if (it == root_of.end() || literal(op, k)) continue;
+            if ((op == OpAccessChain || op == OpInBoundsAccessChain) && (k == 1 || k == 2)) continue;
+            if ((op == OpLoad || op == OpArrayLength) && k == 2) continue;
+            written.insert(it->second);
+        }
+        i += wc;
+    }
+    return written;
+}
+}  // namespace
+
 const DescriptorBinding* ShaderReflection::find(uint32_t set, uint32_t binding) const {
     for (const auto& b : bindings)
         if (b.set == set && b.binding == binding) return &b;
@@ -546,6 +624,19 @@ bool reflect_spirv(const uint32_t* words, size_t count, ShaderReflection& out, s
         }
     };
 
+    // storage blocks: which of them an instruction may write (DescriptorBinding::may_write). Modules without one are not scanned.
+    std::vector<uint32_t> storage_vars;
+    for (const Var& v : vars) {
+        if (v.storage != ScUniform && v.storage != ScStorageBuffer) continue;
+        const Type* ptr = type(v.ptr_type);
+        if (!ptr || ptr->op != OpTypePointer || ptr->w.size() < 2) continue;
+        uint32_t inner = ptr->w[1];
+        for (const Type* t = type(inner); t && (t->op == OpTypeArray || t->op == OpTypeRuntimeArray) && !t->w.empty(); t = type(inner)) inner = t->w[0];
+        const auto sd = dec.find(inner);
+        if (v.storage == ScStorageBuffer || (sd != dec.end() && sd->second.buffer_block)) storage_vars.push_back(v.id);
+    }
+    const std::unordered_set<uint32_t> written = written_vars(words, count, storage_vars);
+
     for (const Var& v : vars) {
         const Type* ptr = type(v.ptr_type);
         if (!ptr || ptr->op != OpTypePointer || ptr->w.size() < 2) continue;
@@ -602,6 +693,7 @@ bool reflect_spirv(const uint32_t* words, size_t count, ShaderReflection& out, s
             if (auto it = dec.find(inner); it != dec.end()) sd = &it->second;
             bool storage = v.storage == ScStorageBuffer || (sd && sd->buffer_block);
             b.type = storage ? DescriptorType::StorageBuffer : DescriptorType::UniformBuffer;
+            if (storage) b.may_write = written.count(v.id) != 0;
         } else if (t->op == OpTypeSampledImage) {
             b.image = image_shape(t->w.empty() ? nullptr : type(t->w[0]));
             b.type = b.image.dim == kDimBuffer ? DescriptorType::UniformTexelBuffer

@@ -1,0 +1,27 @@
+[package]
+name = "pokopia-relay"
+version = "0.1.1"
+description = "Link Play relay for the Pokopia PC port (the launcher's relay, and a standalone server)"
+edition = "2021"
+license = "GPL-3.0-or-later"
+
+[lib]
+name = "pokopia_relay"
+path = "src/lib.rs"
+
+[[bin]]
+name = "pokopia-relay"
+path = "src/main.rs"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

@@ -184,7 +184,7 @@ void write_texels(const Target& r, const NVNcopyRegion& g, const uint8_t* src, i
     if (r.L.block_linear) write_block_linear(r, g, src, row, image);
     else write_linear(r, g, src, row, image);
     be::tev(r.t, "write_texels");
-    be::tx_mark("tx.write", r.t);
+    be::tx_mark(be::TxMark::Write, r.t);
     r.t->cpu_dirty.store(true);
     gpu::mark_texture_cpu_dirty(r.t);
 }
@@ -253,7 +253,7 @@ NVNboolean nvnTextureInitialize(NVNtexture* texture, const NVNtextureBuilder* bu
     be::texture_registry_add(t);
     be::texture_registry_add_virtual(t);
     be::tev(t, "init", static_cast<uint64_t>(info.offset), t->storage_size);
-    be::tx_mark("tx.init", t);
+    be::tx_mark(be::TxMark::Init, t);
     be::g_tex_scan_epoch.fetch_add(1, std::memory_order_relaxed);
     be::g_bind_gen.fetch_add(1, std::memory_order_relaxed);
     return 1;
@@ -440,7 +440,7 @@ void nvnTextureFlushTexels(const NVNtexture* texture, const NVNtextureView* view
     Texture* t = tex_of(texture);
     if (!t || !t->mem) return;
     be::tev(t, "flush_texels");
-    be::tx_mark("tx.flushtx", t);
+    be::tx_mark(be::TxMark::FlushTexels, t);
     t->cpu_dirty.store(true);
     gpu::mark_texture_cpu_dirty(t);
 }

@@ -23,6 +23,8 @@
 #include "nxrt/log.h"
 #include "nxrt/memory.h"
 #include "nxrt/module.h"
+#include "poll_wait.h"
+#include "../diag/hle_census.h"
 
 namespace nxrt {
 namespace {
@@ -94,10 +96,8 @@ struct WaitSite { uint64_t n = 0, ns = 0, req_ns = 0; };
 std::mutex g_ws_lock;
 std::map<std::tuple<std::string, uint32_t, uint64_t, uint64_t>, WaitSite> g_ws;
 uint64_t g_ws_dump_ns = 0;
-bool wait_sites_on() {
-    static const bool on = config_get_bool("diag", "wait_sites", false);
-    return on;
-}
+bool g_wait_sites = false;   // read once by svc_init, before any guest code runs: one load per SVC, no guard of a function-local static
+inline bool wait_sites_on() { return g_wait_sites; }
 void wait_site_record(::Ctx* c, uint32_t number, uint64_t req, uint64_t t0, uint64_t t1) {
     static Module* main_mod = module_by_name("main");
     uint64_t site[2] = {0, 0};
@@ -172,6 +172,8 @@ void svc_init() {
         svc_register_info_group();
         svc_register_thread_group();
         svc_register_ipc_group();
+        g_wait_sites = config_get_bool("diag", "wait_sites", false);
+        diag::census::init();                                // [diag] hle_census: before any guest code runs
         diag_add_report(&kernel::sync_wait_report, false);   // the freeze dump: the guest threads blocked in kernel waits, after the thread dump
         size_t n = 0;
         for (auto* h : g_handlers) n += h != nullptr;
@@ -232,7 +234,8 @@ void svc_set_busy_hook(uint32_t host_tid, void (*fn)()) {
 }
 void svc_set_observer(void (*fn)(::Ctx*)) { g_observer.store(fn, std::memory_order_release); }
 
-void svc_dispatch(::Ctx* c, uint32_t number, uint64_t pc) {
+namespace {
+inline void svc_run(::Ctx* c, uint32_t number, uint64_t pc) {
     GameSvcTimer game_timer(number);
     if (kernel::KThread* self = kernel::current_thread()) {
         // the starvation line's "last ran on processor": sampled at every 16th SVC of the thread (and its first)
@@ -241,6 +244,7 @@ void svc_dispatch(::Ctx* c, uint32_t number, uint64_t pc) {
     }
     if (auto fn = g_busy_hook.load(std::memory_order_acquire); fn && GetCurrentThreadId() == g_busy_tid.load(std::memory_order_relaxed)) fn();
     if (auto fn = g_observer.load(std::memory_order_relaxed)) fn(c);
+    kernel::poll_wait_check();   // a guest thread is in the kernel: has a value a polling loop sleeps on changed? (poll_wait.h)
     SvcHandler h = svc_handler(number);
     if (number < kSvcCount) count_svc(number);
     if (!h) {
@@ -265,6 +269,15 @@ void svc_dispatch(::Ctx* c, uint32_t number, uint64_t pc) {
         return;
     }
     h(c);
+}
+}  // namespace
+
+void svc_dispatch(::Ctx* c, uint32_t number, uint64_t pc) {
+    if (diag::census::on()) [[unlikely]] {   // [diag] hle_census: the dispatcher's own work included
+        diag::census::Scope scope(diag::census::key(diag::census::kSvc, number < kSvcCount ? number : kSvcCount - 1));
+        return svc_run(c, number, pc);
+    }
+    svc_run(c, number, pc);
 }
 
 std::string svc_summary() {

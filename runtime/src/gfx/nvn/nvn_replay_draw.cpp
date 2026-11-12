@@ -16,6 +16,7 @@ void CmdState::begin_submit() {
     shadow_invalidate();
     want_depth_ro = false;
     key_dummy_binding = 0;
+    fs_tonemap = -1;
 }
 // vkCmdBindIndexBuffer unless the same (buffer, offset, type) is already bound in this command buffer.
 static void bind_index_buffer(VkCommandBuffer cb, VkBuffer buf, VkDeviceSize off, VkIndexType type) {
@@ -383,7 +384,6 @@ static const ShaderInfo* tcs_now() { return S.stage[kTessCtl] ? S.stage[kTessCtl
 static bool begin_draw(int mode, bool indexed, int index_type, VkPrimitiveTopology* topo_out) {
     RpScope rp_all(kRpDraw);
     PoolReasonScope pr_(kReasonVertex);
-    ResolveScope rs_;
     const ShaderInfo* vs = S.stage[kVertex];
     if (!vs) { log_once(kOnceDrawNoVs, "draw without a vertex shader skipped"); return false; }
     if (!S.render_enable) return false;
@@ -408,12 +408,12 @@ static bool begin_draw(int mode, bool indexed, int index_type, VkPrimitiveTopolo
     if (g_cmd.dirty & kPipe) {
         const ShaderInfo* stages[6] = {vs, S.stage[kFragment], S.stage[kGeometry], tcs_now(), S.stage[kTessEval], nullptr};
         g_cmd.pl = prog_layout(stages);
+        g_cmd.fs_tonemap = -1;
     }
     if (g_trace_hooks) trace_note_fs();
     const ProgLayout* pl = g_cmd.pl;
     if (!pl) return false;
     if (pl->c0_graphics && g_sets.draw_base_instance != g_sets.bank_base_instance) g_cmd.dirty |= kDesc;   // c[0] + 0x644 changed: new sets
-    rs_.arm(pl);
     if (extras::temporal_wanted()) temporal_gbuffer_note();
     if (g_cmd.dirty & (kDesc | kPipe)) {
         RpScope rp_(kRpPrep);
@@ -423,7 +423,14 @@ static bool begin_draw(int mode, bool indexed, int index_type, VkPrimitiveTopolo
         g_cmd.want_depth_ro = samples_depth_target(*pl);
         prepare_textures(*pl);
         if (g_trace) trace_dump_raw(*pl);
-        scene_upscale_for_draw(*pl);
+        // scene_upscale_for_draw acts only on a tone-map draw into a colour target and clears the override otherwise. Whether the
+        // fragment shader is that one is asked once per bound program (hdr_is_tonemap: a mutex and a map of hash strings), at the
+        // first such draw as before.
+        const ShaderInfo* fs = S.stage[kFragment];
+        const bool colour = fs && S.ncolor > 0 && S.color_tex[0];
+        if (colour && g_cmd.fs_tonemap < 0) g_cmd.fs_tonemap = extras::hdr_is_tonemap(fs->spirv, fs->hash) ? 1 : 0;
+        if (colour && g_cmd.fs_tonemap > 0) scene_upscale_for_draw(*pl);
+        else g_su.clear();
     }
     if (g_copies.fb_seen || (g_cmd.dirty & (kDesc | kPipe))) feedback_prepare(*pl);
     bool pass_ok;

@@ -30,6 +30,9 @@ bool wait_serial(uint64_t serial, uint64_t timeout_ns);
 // serial (or needs it at once), so the batch is flushed immediately.
 enum class PollKind { Wait, Sync };
 bool serial_done(uint64_t serial, PollKind kind = PollKind::Wait);
+// A guest poll answered "not signaled" (nvn_sync_wake.cpp): the calling thread's next short sleep ends when a submission completes.
+// token: kernel::early_wake_token() read before the poll. No-op while [kernel] early_wake is off.
+void sync_wake_want(uint32_t token);
 
 // Window: texture `index` of the window is shown (after the submissions already made). The call returns when the frame has
 // been handed to the swapchain; it honours the shell's frame limiter.

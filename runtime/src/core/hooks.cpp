@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "nxrt/log.h"
+#include "../diag/hle_census.h"
 
 namespace nxrt {
 namespace {
@@ -38,6 +39,17 @@ std::vector<std::unique_ptr<const Snapshot>> g_retired;          // owns every p
 std::vector<std::shared_ptr<Hook>> g_all;                        // by registration order, for hook_calls / counting
 uint32_t g_next_id = 1;
 std::atomic<uint64_t> g_site_calls[3];
+
+// Site calls per thread, added to the shared count every 1024 (as host_import's count): every thread passes the sites, and a locked add per
+// call moves the counters' cache line between the cores. The summary count is short by under 1024 per thread and kind.
+inline void count_site(HookKind kind) {
+    static thread_local uint32_t n[3] = {};
+    const int k = static_cast<int>(kind);
+    if (++n[k] == 1024) {
+        g_site_calls[k].fetch_add(1024, std::memory_order_relaxed);
+        n[k] = 0;
+    }
+}
 
 std::vector<std::shared_ptr<Hook>>& chain_of(Chain& c, HookKind k) {
     return k == HookKind::Inline ? c.inl : k == HookKind::Mid ? c.mid : c.entry;
@@ -67,6 +79,7 @@ uint32_t add(HookKind kind, uint64_t addr, InlineHookFn inl, SiteHookFn site, vo
     chain_of((*next)[addr], kind).push_back(h);
     publish(std::move(next));
     g_all.push_back(h);
+    diag::census::note_hook(h->id, addr, static_cast<uint32_t>(kind));   // the name of its [diag] hle_census entry
     return h->id;
 }
 
@@ -121,34 +134,77 @@ void hooks_clear() {
 
 }  // namespace nxrt
 
-extern "C" {
+namespace {
+// One hook's call; under [diag] hle_census a scope of its own, nested in the site's.
+template <bool kCensus>
+inline void call_inline(const nxrt::Hook& h, Ctx* c, uint64_t addr) {
+    if constexpr (kCensus) {
+        nxrt::diag::census::Scope scope(nxrt::diag::census::key(nxrt::diag::census::kHook, h.id));
+        h.inl(c, addr, h.user);
+    } else {
+        h.inl(c, addr, h.user);
+    }
+}
+template <bool kCensus>
+inline int call_site(const nxrt::Hook& h, Ctx* c, uint64_t addr) {
+    if constexpr (kCensus) {
+        nxrt::diag::census::Scope scope(nxrt::diag::census::key(nxrt::diag::census::kHook, h.id));
+        return h.site(c, addr, h.user);
+    } else {
+        return h.site(c, addr, h.user);
+    }
+}
 
-void nx_site_inline(Ctx* c, uint64_t addr) {
-    nxrt::g_site_calls[0].fetch_add(1, std::memory_order_relaxed);
+template <bool kCensus>
+void site_inline(Ctx* c, uint64_t addr) {
+    nxrt::count_site(nxrt::HookKind::Inline);
     const nxrt::Snapshot* s = nxrt::g_snap.load(std::memory_order_acquire);
     if (!s) return;
     auto it = s->find(addr);
     if (it == s->end()) return;
     for (const auto& h : it->second.inl) {
         h->calls.fetch_add(1, std::memory_order_relaxed);
-        h->inl(c, addr, h->user);
+        call_inline<kCensus>(*h, c, addr);
     }
 }
 
-static int run_chain(Ctx* c, uint64_t addr, nxrt::HookKind kind) {
-    nxrt::g_site_calls[static_cast<int>(kind)].fetch_add(1, std::memory_order_relaxed);
+template <bool kCensus>
+int run_chain(Ctx* c, uint64_t addr, nxrt::HookKind kind) {
+    nxrt::count_site(kind);
     const nxrt::Snapshot* s = nxrt::g_snap.load(std::memory_order_acquire);
     if (!s) return 0;
     auto it = s->find(addr);
     if (it == s->end()) return 0;
     for (const auto& h : nxrt::chain_of(it->second, kind)) {
         h->calls.fetch_add(1, std::memory_order_relaxed);
-        if (h->site(c, addr, h->user)) return 1;
+        if (call_site<kCensus>(*h, c, addr)) return 1;
     }
     return 0;
 }
 
-int nx_site_midhook(Ctx* c, uint64_t addr) { return run_chain(c, addr, nxrt::HookKind::Mid); }
-int nx_hook_entry(Ctx* c, uint64_t addr) { return run_chain(c, addr, nxrt::HookKind::Entry); }
+int run_chain_counted(Ctx* c, uint64_t addr, nxrt::HookKind kind) {   // [diag] hle_census: the site's lookup is a scope too
+    nxrt::diag::census::Scope scope(nxrt::diag::census::key(nxrt::diag::census::kSite, static_cast<uint32_t>(kind)));
+    return run_chain<true>(c, addr, kind);
+}
+}  // namespace
+
+extern "C" {
+
+void nx_site_inline(Ctx* c, uint64_t addr) {
+    if (nxrt::diag::census::on()) [[unlikely]] {
+        nxrt::diag::census::Scope scope(nxrt::diag::census::key(nxrt::diag::census::kSite, 0));
+        return site_inline<true>(c, addr);
+    }
+    site_inline<false>(c, addr);
+}
+
+int nx_site_midhook(Ctx* c, uint64_t addr) {
+    if (nxrt::diag::census::on()) [[unlikely]] return run_chain_counted(c, addr, nxrt::HookKind::Mid);
+    return run_chain<false>(c, addr, nxrt::HookKind::Mid);
+}
+int nx_hook_entry(Ctx* c, uint64_t addr) {
+    if (nxrt::diag::census::on()) [[unlikely]] return run_chain_counted(c, addr, nxrt::HookKind::Entry);
+    return run_chain<false>(c, addr, nxrt::HookKind::Entry);
+}
 
 }  // extern "C"

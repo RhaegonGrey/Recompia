@@ -418,6 +418,7 @@ HostMark Stream::play(const Entry& e) {
 // the host clock on an absolute timeline that starts with the first buffer after the queue ran empty, so a late wake-up never
 // stretches the stream. Halt, flush and stop bump epoch_, which sends the loop back to re-read the queue.
 void Stream::pace() {
+    nxrt::log_set_thread_name(dir_ == Dir::Out ? "audio-out" : "audio-in");
     nxrt::audren::BoostAudioThread();
     nxrt::audren::TimerResolutionScope::Acquire();
     const uint64_t margin = dir_ == Dir::Out ? static_cast<uint64_t>(rate_) * out_latency_ms() / 1000u : 0;

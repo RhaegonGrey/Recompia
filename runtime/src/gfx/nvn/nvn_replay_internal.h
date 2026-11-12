@@ -135,6 +135,7 @@ struct GState {
     Ref<Texture> depth_tex;
     TextureViewInfo depth_view;
     bool depth_has_view = false;
+    uint64_t targets_gen = 1;   // raised by every SetRenderTargets: the same count means the same targets and views
     int window_origin = NVN_WINDOW_ORIGIN_MODE_LOWER_LEFT;
     int depth_mode = NVN_DEPTH_MODE_NEAR_IS_MINUS_W;
 };
@@ -160,6 +161,7 @@ struct Pass {
     uint32_t samples = 1;
     float scale = 1.0f;         // resolution scale of the attachments ([gfx] render_scale): viewports and scissors are multiplied by it
     uint8_t fbl = 0;            // colour slots in ATTACHMENT_FEEDBACK_LOOP_OPTIMAL_EXT (their draws sample them: feedback_prepare)
+    uint64_t targets_gen = 0;   // S.targets_gen the pass's targets were last found to be (ensure_pass)
     uint32_t draws = 0;         // draws recorded in the pass (GPU pass profiler)
     uint64_t verts = 0;         // vertices (indices for indexed draws) times instances of those draws
 };
@@ -284,6 +286,7 @@ struct CmdState {   // owner: nvn_replay_draw.cpp (begin_draw); the other ops se
     bool want_depth_ro = false;      // some texture this draw samples is the current depth attachment
     bool vb_bound_in_cb = false;     // vkCmdBindVertexBuffers2 was called in this command buffer (dynamic strides need one)
     bool prog_writes = false;        // the bound program has storage buffer or storage image bindings
+    int8_t fs_tonemap = -1;          // the bound fragment shader is the tone-map shader (extras::hdr_is_tonemap); -1: not asked since kPipe
     DynShadow dsh;                   // bind_coalesce: the dynamic state, vertex and index buffers last sent in this command buffer
     VbShadow vbsh[16];
     IbShadow ibsh;
@@ -435,44 +438,30 @@ inline uint32_t read_handle_word(int stage, int bank, int word) {
     return v;
 }
 
-// [nvn] resolve_once (default on): a draw (or dispatch) resolves each texture binding once; prepare_textures, vol3d_prepare,
-// samples_depth_target, feedback_prepare, scene_upscale_for_draw, build_set_resolved and support_for_draw then share that result (they
-// called resolve_texture each, 2 shared locks and a view + sampler copy every time: up to 5 per binding per draw).
+// [nvn] resolve_once (default on): a texture handle is resolved (pool entries -> texture, view, sampler) once and every later binding
+// of it takes that result. prepare_textures, vol3d_prepare, samples_depth_target, feedback_prepare, scene_upscale_for_draw,
+// sampled_descriptor and support_for_draw call resolve_texture each (2 shared locks and a view + sampler copy: up to 5 per binding per
+// draw), and most draws bind handles an earlier draw bound.
 // What resolve_texture returns is a function of: the handle (S.tex of the stage, or the word in the uniform block's memory), the bound
 // texture and sampler pools (S.tpool / S.spool) and their entries. Entries change only in texture_pool_register / sampler_pool_store,
 // which bump be::g_bind_gen under the pool's lock after the write; texture images remade or released (tex_rescale,
 // tex_enable_feedback_loop, release_texture_gpu, re-init) bump it too, though they keep the Texture* and the entry. The feedback remap
 // (g_copies.fb_use), the 3D copies (g_copies.vol3d_use), passes and render targets are applied by the callers AFTER resolve_texture, so they are not
-// inputs. Invariant: a slot of g_rc.slots is used only within the draw scope it was filled in (g_rc.stamp, armed per begin_draw / do_dispatch
-// for that ProgLayout) and only while the handle read again now, both pool pointers and g_bind_gen (read before the resolve) are what
-// they were: so a slot is never staler than a call made at its fill time, and any pool write or image remake in between re-resolves.
+// inputs. Invariant: a slot is used only while the handle read again now, g_bind_gen (read before the resolve, so a pool write during
+// it re-resolves at the next call) and the pool binding are what they were when it was filled. The pool binding is `pools`, raised
+// whenever S.tpool or S.spool is set to another object (run_list) or dropped (replay_shutdown); S holds a reference to both pools, so
+// neither can be freed and its address reused while the count stands. A slot's Texture* is kept alive by its pool entry.
 struct ResolveSlot {
-    uint64_t stamp = 0, gen = 0, handle = 0;
-    const void* tpool = nullptr;
-    const void* spool = nullptr;
+    uint64_t handle = 0, gen = 0, pools = 0;
     TexResolved r;
 };
-struct ResolveCache {   // owner: nvn_replay_textures.cpp (resolve_texture); armed by ResolveScope
-    std::vector<ResolveSlot> slots;    // one per binding of `pl`
-    const ProgLayout* pl = nullptr;    // the layout of the draw scope (null: no scope, resolve_texture resolves every time)
-    uint64_t stamp = 0;                // the draw scope
+struct ResolveCache {   // owner: nvn_replay_textures.cpp (resolve_texture)
+    static constexpr size_t kSlots = 512;   // direct mapped by handle
+    ResolveSlot slot[kSlots];
+    uint64_t pools = 1;                     // the pool binding (no slot holds 0)
 };
 extern ResolveCache g_rc;
 bool resolve_once_on();
-// RAII draw scope: arm() once the draw's ProgLayout is known; the scope ends with the draw or dispatch setup.
-struct ResolveScope {
-    ResolveScope() = default;
-    ResolveScope(const ResolveScope&) = delete;
-    ResolveScope& operator=(const ResolveScope&) = delete;
-    void arm(const ProgLayout* pl) {
-        static const bool on = resolve_once_on();
-        if (!on || !pl) return;
-        ++g_rc.stamp;
-        g_rc.pl = pl;
-        if (g_rc.slots.size() < pl->bindings.size()) g_rc.slots.resize(pl->bindings.size());
-    }
-    ~ResolveScope() { g_rc.pl = nullptr; }
-};
 TexResolved resolve_texture(const BindingDesc& d);
 ViewRequest make_request(const DescriptorBinding& b, const TexResolved& r);
 TexResolved resolve_image(const BindingDesc& d);

@@ -14,6 +14,8 @@
 // So while the player cannot turn the camera (the follow camera's turn branch, hook_cam_stick, closed for 200 ms: an event, a dialogue, a
 // transition, a menu) or the NVN replay marks loading frames, and for [pkp] event_hold_ms (default 1500) after, the frame limiter's ceiling
 // holds the game at 60 fps and the multiplier keeps the retail rule. In free play the frame limit and the fractional multiplier apply.
+// Where the frame cap snaps to the refresh rate (a Steam Deck with vsync) the limiter lowers that 60 to the next divisor of it (45 on a
+// 90 Hz panel: [latency] snap_ceiling); the retail rule covers it, a step above 1.0 being what the console does on a slow frame.
 // The 60 fps cap is the game's own: the main loop's frame step (0x89def8, profiler zone "Sync") waits, sleeping in 200 us task-graph waits,
 // until tick frequency / 60 ticks (60 = 60 / 0x13fc00(), a constant 1.0) have passed since the previous frame began. The mid hook right
 // after that division (0x89e27c, x22 = the period in ticks) sets the period to 0, so the runtime's frame limiter at the frame boundary
@@ -58,7 +60,10 @@ bool event_hold(State& s) {
         if (want) {
             s.hold_start_ns = now;
             ++s.holds;
-            if (s.holds <= 20) NXLOG_I(kTag, "event hold %llu: game held at 60 fps", static_cast<unsigned long long>(s.holds));
+            if (s.holds <= 20) {
+                FrameLimiter* lim = play::limiter();
+                NXLOG_I(kTag, "event hold %llu: game held at 60 fps (paced at %.2f)", static_cast<unsigned long long>(s.holds), lim ? lim->effective_fps() : 0.0);
+            }
         } else if (s.holds <= 20) {
             NXLOG_I(kTag, "event hold %llu: released after %llu ms", static_cast<unsigned long long>(s.holds),
                     static_cast<unsigned long long>((now - s.hold_start_ns) / 1000000ull));

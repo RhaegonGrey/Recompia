@@ -392,6 +392,7 @@ void start_resync_watcher() {
             return;
         }
         std::thread([] {
+            log_set_thread_name("time-resync");
             for (;;) {
                 std::this_thread::sleep_for(std::chrono::seconds(2));
                 std::lock_guard<std::mutex> lk(mu());

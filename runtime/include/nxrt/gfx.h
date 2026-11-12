@@ -131,6 +131,7 @@ struct DeviceFeatures {
     bool swapchain_colorspace = false;    // VK_EXT_swapchain_colorspace (instance): HDR10 and scRGB colour spaces in the surface format list
     bool hdr_metadata = false;            // VK_EXT_hdr_metadata
     bool present_id = false;              // VK_KHR_present_id (feature presentId)
+    bool present_wait = false;            // VK_KHR_present_wait (feature presentWait); enabled only for present_timing.h (present_wait_wanted)
     bool low_latency2 = false;            // VK_NV_low_latency2 (NVIDIA Reflex)
     bool anti_lag = false;                // VK_AMD_anti_lag (AMD Anti-Lag 2)
     // Device-lost diagnostics: enabled whenever offered ([gfx] gpu_checkpoints = off leaves the checkpoints off)

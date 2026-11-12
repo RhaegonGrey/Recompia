@@ -13,7 +13,8 @@ The package ships no game code. This script
   6. deletes the generated sources and objects (unless --keep) and records the result in <game>/build/done.json.
 
 Stamps, one per stage. The library stamp (lib_stamp(): the dump's main build ID and module hashes, the lifter sources,
-the site lists, the module table, the compile flags and the compiler) is everything the module libraries are made from.
+the site lists, the module table, the locals mode, the compile flags and the compiler) is everything the module libraries
+are made from.
 state.json holds it for the lift and obj folders of a build in progress, lib/stamp.json for the finished libraries.
 A release that changes none of it (only the runtime or the SDK files) links again from the kept libraries: steps 2-4 are
 skipped. Any other change, a missing or unreadable stamp, or a stamp from an older release (another FORMAT or shape)
@@ -62,13 +63,19 @@ SDK_FILES = ['pkp_stub.cpp', 'pkp_rt_api.h', 'pkp.rc', 'pkp.manifest']
 # recomp/games/pkp/config.py (modules) and recomp/nxrecomp/compile_flags.py (ZIG_MINGW)
 sys.path.insert(0, RECOMP)
 from nxrecomp import compile_flags, modheader   # noqa: E402
-from nxrecomp.config import load_game           # noqa: E402
+from nxrecomp.config import load_game, reg_locals_mode   # noqa: E402
 GAME = load_game('pkp')
 # name, NSO file, guest base, NxModule.index, translation units
 MODULES = [(m.name, m.source, m.base, i, m.shards) for i, m in enumerate(GAME.modules)]
 # site lists per module, as paths under RECOMP (main's main.sites)
 SITES = {m.name: 'games/pkp/' + m.sites for m in GAME.modules if m.sites}
 CXXFLAGS = compile_flags.ZIG_MINGW
+# guest registers and flags in C locals (recomp/nxrecomp/locals.py): the game config's reg_locals; PKP_LOCALS=off|exact|aapcs
+# overrides it for a test build. In the stamps, so another mode lifts and compiles again
+try:
+    LOCALS = reg_locals_mode(GAME, os.environ.get('PKP_LOCALS'))
+except ValueError as e:
+    sys.exit('PKP_LOCALS: %s' % e)
 COMPILER = [ZIG, 'c++']                 # the compile command before the flags (tests put a fake one here)
 CACHE_MB = 3072                         # default size cap of <game>/build/objcache
 CREATE_NO_WINDOW = 0x08000000
@@ -124,7 +131,8 @@ def tree_hash(root, rels):
 def tool_stamp():
     """The part of the build stamp this package decides: a release that changes any of it rebuilds pkp.exe."""
     return {'lifter': tree_hash(RECOMP, LIFTER), 'sites': tree_hash(RECOMP, sorted(SITES.values())), 'sdk': tree_hash(SDK, SDK_FILES),
-            'runtime': sha256(os.path.join(SDK, 'pkp_rt.lib')), 'cxxflags': CXXFLAGS, 'modules': [list(m) for m in MODULES],
+            'runtime': sha256(os.path.join(SDK, 'pkp_rt.lib')), 'cxxflags': CXXFLAGS, 'locals': LOCALS,
+            'modules': [list(m) for m in MODULES],
             'modheader': hashlib.sha256(modheader.render(GAME.modules).encode()).hexdigest()}
 
 
@@ -137,7 +145,7 @@ def lib_stamp(want, tools, compiler):
     """Everything the module libraries are made from: the stamp of the lift, compile and archive stages. The runtime and
     the SDK files are not in it (they only go into the link)."""
     stamp = {'format': FORMAT, 'main_build_id': want['main_build_id'], 'sha256': want['sha256'], 'compiler': compiler}
-    stamp.update((k, tools[k]) for k in ('lifter', 'sites', 'cxxflags', 'modules'))
+    stamp.update((k, tools[k]) for k in ('lifter', 'sites', 'cxxflags', 'locals', 'modules'))
     return stamp
 
 
@@ -293,7 +301,7 @@ def lift(runner, exefs, gen, jobs):
             shutil.rmtree(out)
         os.makedirs(out)
         args = ['lift', os.path.join(exefs, nso), out, '--name', name, '--base', hex(base), '--shards', str(shards),
-                '--jobs', str(jobs), '--game', 'pkp', '--index', str(index)]
+                '--jobs', str(jobs), '--game', 'pkp', '--index', str(index), '--locals', LOCALS]
         if name in SITES:
             args += ['--sites', os.path.join(RECOMP, *SITES[name].split('/'))]
         cmd = [sys.executable, '-I', os.path.abspath(__file__), '--lift-one', json.dumps(args)]

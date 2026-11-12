@@ -366,6 +366,16 @@ void replay_end_submit(Frame& f);
 void replay_request_trace();      // trace the next whole presented frame (any thread)
 void replay_shutdown();           // destroys pipelines and layouts (render thread, device idle)
 
+// ---- [nvn] gpu_split (nvn_gpu.cpp) -----------------------------------------------------------------------------------------
+// The recording time of one piece in TSC ticks (ft::tsc; 0: off) and the most pieces one submission is cut into.
+uint64_t split_budget_ticks();
+uint32_t split_max_pieces();
+// Ends f's command buffer and sends it to the queue now (after the submissions recorded before it), signalling nothing; f.cb is then a fresh
+// command buffer of the same slot. The caller splits only where nothing has to carry over from one command buffer to the next (no render pass,
+// query or debug label open) and treats f.cb as new (no bound state). false: not split (no command buffer left, device lost), f unchanged.
+bool split_piece(Frame& f);
+void split_note_blocked();        // a due split met an open query or debug label (the summary line counts them)
+
 // ---- shared facts (nvn_gpu.cpp) ----------------------------------------------------------------------------------------
 int window_origin_mode();
 int depth_mode();
@@ -436,7 +446,7 @@ void present_give_back();
 #include <deque>
 #include <memory>
 namespace nxrt::nvn::be {
-namespace gpu { struct Mirror; }
+namespace gpu { struct Mirror; struct PoolTrack; }
 
 // One Vulkan buffer over a byte range of a pool: an import (its own private view, VkDeviceMemory and VkBuffer), or with [nvn] pool_copy a
 // host-visible buffer of its own (shadow) that holds a copy of the range (nvn_pool_copy.cpp).
@@ -453,14 +463,17 @@ struct PoolChunk {
     uint32_t fail_since = 0;          // present count of the first failed attempt of the run (the recovery log line)
     uint32_t used_at = 0;             // present count of the last bind that resolved to it (lazy_drop_idle, oom_drop_idle)
     uint64_t used_serial = 0;         // the submission being recorded at that bind (dropped only once it has completed)
-    // [nvn] pool_copy: buffer = shadow.buffer, mem = VK_NULL_HANDLE. page_copied[k] = serial of the last guest -> shadow copy of page k of
-    // the chunk (0: never). land_refs: GPU writes recorded into it that have not landed in guest memory yet (under the landing mutex).
+    // [nvn] pool_copy: buffer = shadow.buffer, mem = VK_NULL_HANDLE. page_copied[k] = 1 + the last submission the guest -> shadow copy of
+    // page k of the chunk serves (0: no copy yet). land_refs: GPU writes recorded into it that have not landed in guest memory yet (under the landing mutex).
     // cov_*: chunk pages [cov_lo, cov_hi) were all copied in submission cov_serial (the touch's fast path). Render thread except land_refs.
     gfx::Buffer shadow;
     bool is_shadow = false;
     std::vector<uint64_t> page_copied;
+    std::vector<uint32_t> page_gen;   // the write tracker's generation of page k when it was copied (nvn_pool_track.h); 0: copy at every use
     uint32_t land_refs = 0;
     uint64_t cov_serial = 0, cov_lo = 0, cov_hi = 0;
+    bool again = false;               // its cells had a shadow before, dropped since (statistics: copies that fill it again)
+    uint32_t filled = 0;              // pages with a copy (statistics: how much of the shadow is in use)
     struct PoolGpu* owner = nullptr;  // shadow chunks: the pool (eviction)
 };
 
@@ -492,24 +505,31 @@ struct PoolGpu {
     std::vector<int32_t> ext_free;    // indices of dropped imports in ext, reused
     // [nvn] pool_copy: the pool's cells (and spans) are shadows, never imports (lazy is set too: same cell structure). page_gpu[p] = the
     // highest serial with a GPU write recorded into page p of the pool (any chunk or span), 0 once that write has landed. Copy-mode spans
-    // are destroyed in place, never erased (land records point at them).
+    // are destroyed in place, never erased (land records point at them). page_landed[p]: a GPU write landed in page p since a shadow
+    // last copied it (statistics: the copy that follows fetches bytes a shadow gave). cell_had[k]: cell k had a shadow before.
     bool copy = false;
     std::unique_ptr<std::atomic<uint64_t>[]> page_gpu;
+    std::unique_ptr<std::atomic<uint8_t>[]> page_landed;
+    std::vector<uint8_t> cell_had;
+    gpu::PoolTrack* track = nullptr;  // which pages the CPU wrote since they were copied (nvn_pool_track.h); null: every bind copies
 };
 
 namespace gpu {
-// ---- [nvn] pool_copy = auto | on | off (nvn_pool_copy.cpp) ----------------------------------------------------------------------
+// ---- [nvn] pool_copy = auto | on | off (nvn_pool_copy.cpp, nvn_pool_land.cpp) ---------------------------------------------------
 // Copy (shadow) mode: pool cells live in host-visible Vulkan buffers of their own instead of userptr imports of guest memory. Every resolve
-// copies the page-rounded range it touches from guest memory into the shadow (once per submission per page, never over a page with a GPU
-// write in flight); GPU writes are recorded at record time and copied back into guest memory when their serial completes, before any
-// caller sees it complete (read_completed). Phase 1: no write tracking.
+// copies the pages of the range it touches that the CPU wrote since their last copy (nvn_pool_track.h; at most once per submission, never
+// over a page with a GPU write in flight); GPU writes are recorded at record time and copied back into guest memory when their serial
+// completes, before any caller sees it complete (read_completed).
 bool pool_copy_on();                                  // read once (auto: Wine, or an integrated GPU with <=8 GiB of device-local memory); logged
 uint64_t pool_copy_cell();                            // [nvn] pool_copy_cell_mb in bytes
 uint32_t pool_copy_idle();                            // [nvn] pool_copy_idle presents
 bool pool_copy_any();                                 // any thread: a copy pool exists (cheap)
-void pcopy_pool_init(PoolGpu* g);                     // import_pool: page_gpu, the landing thread
+void pcopy_pool_init(PoolGpu* g);                     // import_pool: page_gpu, the write tracker, the landing thread
+void pcopy_pool_destroy(PoolGpu* g);                  // pool_gpu_destroy, after its chunks: the write tracker goes
+void pcopy_track_stop(PoolGpu* g);                    // a cell of the pool is imported instead: no page of it stays read-only
 // A shadow over pool bytes [off, off + size) into c (what import_range does for an import). False: the caller imports it instead.
-bool pcopy_alloc(PoolGpu* g, PoolChunk& c, uint64_t off, uint64_t size, const char* what);
+// cells: the range is whole cells of the pool (an ext entry), not a span.
+bool pcopy_alloc(PoolGpu* g, PoolChunk& c, uint64_t off, uint64_t size, const char* what, bool cells);
 // A shadow span over the cells [off, off + size) touches: an existing one or a new one (*made). Null: none could be made.
 PoolChunk* pcopy_span(PoolGpu* g, uint64_t off, uint64_t size, bool* made);
 void pcopy_free(PoolChunk& c);                        // destroy_chunk of a shadow (its land records are dropped)
@@ -530,7 +550,11 @@ void pool_drop_span(PoolGpu* g, PoolChunk& c);
 bool pool_drop_chunk_if_live(PoolGpu* g, PoolChunk* c);   // pcopy_evict_for: under g_live_mu, only if g is still live and owns c
 // nvn_gpu.cpp: waits up to timeout_ns for the timeline to reach serial (the landing thread). False: timed out, device lost or no back end.
 bool timeline_wait(uint64_t serial, uint64_t timeout_ns);
+// nvn_sync_wake.cpp: the thread that sees completions for polling game threads; with the back end (install / tear_down).
+void sync_wake_start();
+void sync_wake_stop();
 uint64_t recording_serial();                          // the serial being recorded, 0 outside a recording (render thread)
+uint64_t queued_serial();                             // the serial of the last submission queued (any thread)
 struct PoolCopyStats {
     bool on = false;
     int64_t live_bytes = 0;

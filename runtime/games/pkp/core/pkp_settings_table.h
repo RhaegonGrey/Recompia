@@ -97,6 +97,9 @@ inline constexpr Spec kSpecs[] = {
     under(InventorySort, b(InventoryAutosort, "inventory_autosort", false, "Sort the bag each time the bag or a container screen opens.")),
     opt_in(gameplay(b(CraftSearch, "craft_search", false, "A Search button in the crafting screen's key guide."))),
     hidden(gameplay(b(TitleQuit, "title_quit", true, "A Quit Game key guide on the title screen."))),
+    gameplay(b(PokemonCap, "pokemon_cap_50", true, "Experimental: more Pokemon can live in the town than the game's 25 (pokemon_cap_limit).")),
+    under(PokemonCap, i(PokemonCapLimit, "pokemon_cap_limit", 31, 25, 64,
+                        "With pokemon_cap_50: how many Pokemon can live in the town; visitors and spawns share the game's 64 actor slots.")),
     b(OptionsMenu, "options_menu", true, "The PC settings as tabs and rows of the game's own Settings screen."),
     s(EventsFile, "events_file", "pokopia_events.tsv", "", "The Events tab's list: one event per line, start date, end date and name, separated by tabs."),
     // Not read by the runtime: the launcher reads it while the game runs, so the Online tab of the game's Settings and the launcher share it.

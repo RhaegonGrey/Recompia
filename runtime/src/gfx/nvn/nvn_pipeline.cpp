@@ -269,9 +269,26 @@ bool cache_save_on() {
     return on;
 }
 
+// [nvn] pipeline_cache_save_s: the least time between two background writes of the cache file (the saver thread's, pipeline_cache_dirty).
+// A write reads the whole cache out of the driver and rewrites the whole file, whatever was added, and any pipeline created in play made
+// one within 2 s. The first write of a session is not held back, and the write at exit (pipeline_cache_flush) is not either, so a
+// session that ends without a shutdown loses at most this many seconds of new pipelines from the file. 0: no least time.
+std::atomic<int64_t> g_last_save_ms{-1};        // steady clock at the last write, -1: none in this session
+int64_t steady_ms() { return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
+bool save_spacing_passed() {
+    static const int64_t gap_ms = [] {
+        const int64_t s = std::clamp<int64_t>(config_get_int("nvn", "pipeline_cache_save_s", 30), 0, 3600);
+        if (s) NXLOG_I(kTag, "pipeline cache: background writes at least %lld s apart ([nvn] pipeline_cache_save_s)", static_cast<long long>(s));
+        return s * 1000;
+    }();
+    const int64_t last = g_last_save_ms.load(std::memory_order_relaxed);
+    return !gap_ms || last < 0 || steady_ms() - last >= gap_ms;
+}
+
 void save_cache() {
     if (!g_cache || g_cache_path.empty() || !cache_save_on()) return;
     NXFT("pipe.cache.save");
+    g_last_save_ms.store(steady_ms(), std::memory_order_relaxed);
     g_cache_dirty.store(false);
     g_new_since_save.store(0);
     size_t n = 0;
@@ -300,7 +317,8 @@ void save_cache() {
 // the write takes seconds. The ordinary small cache is written whenever something new appeared, as before.
 bool pipeline_cache_dirty() {
     if (!g_cache_dirty.load(std::memory_order_relaxed) || !cache_save_on()) return false;
-    return !g_cache_big || g_new_since_save.load(std::memory_order_relaxed) >= 3000;
+    if (g_cache_big && g_new_since_save.load(std::memory_order_relaxed) < 3000) return false;
+    return save_spacing_passed();
 }
 void pipeline_cache_save() { save_cache(); }
 // The write at the end of a session: skipped when the cache is the big one of a preparation and little was added.
@@ -386,15 +404,18 @@ static VkShaderModule create_module(const std::vector<uint32_t>& words, const ch
         }
     }
     // [nvn] loop_guard: the game's compute loops whose count is a constant buffer word get it limited (game::Render::loop_guards,
-    // spirv_limit_count). auto (default): by the table's size on NVIDIA, where the hangs were; a plain cap of 16384 elsewhere (AMD's Windows
-    // driver crashed making pokopia-native's size-query version). table / cap: that on any GPU. off: never.
+    // spirv_limit_count). auto (default): by the table's size on NVIDIA and under Wine (Mesa's drivers: RADV on the Deck and other AMD
+    // handhelds, #531); a plain cap of 16384 elsewhere (AMD's Windows driver crashed making pokopia-native's size-query version). A loop of
+    // up to 16384 items a lane can still pass the Deck's 5 s GPU timeout, so the table size is used wherever it builds. table / cap: that on
+    // any GPU. off: never.
     static const int loop_guard = [] {   // 0 off, 1 table, 2 cap
         const game::Render* gr = game::info().render;
         if (!gr || !gr->loop_guard_count) return 0;
         const std::string v = config_get_str("nvn", "loop_guard", "auto");
         const uint32_t vendor = device().properties().vendorID;
-        const int m = v == "off" || v == "false" || v == "0" ? 0 : v == "table" ? 1 : v == "cap" ? 2 : vendor == 0x10de ? 1 : 2;
-        NXLOG_I(kTag, "loop_guard = %s (%s, vendor 0x%04x)", v.c_str(), m == 0 ? "off" : m == 1 ? "table size" : "cap 16384", vendor);
+        const int m = v == "off" || v == "false" || v == "0" ? 0 : v == "table" ? 1 : v == "cap" ? 2 : vendor == 0x10de || host_is_wine() ? 1 : 2;
+        NXLOG_I(kTag, "loop_guard = %s (%s, vendor 0x%04x%s)", v.c_str(), m == 0 ? "off" : m == 1 ? "table size" : "cap 16384", vendor,
+                host_is_wine() ? ", Wine" : "");
         return m;
     }();
     std::vector<uint32_t> guarded[2];
@@ -1289,6 +1310,7 @@ void pipeline_shutdown() {
     g_cache_tried = false;
     g_cache_ready.store(false);
     g_cache_dirty.store(false);
+    g_last_save_ms.store(-1);
     g_pipeline_count.sub(g_pipeline_count.get());
 }
 

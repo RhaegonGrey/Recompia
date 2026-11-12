@@ -7,13 +7,14 @@
 #include <cstdint>
 
 #include "core/pkp_guest.h"
+#include "core/pkp_layout.h"
 #include "nxrt/log.h"
 
 namespace nxrt::games::pkp::resident_census {
 namespace {
 constexpr std::uint64_t kPoolGlobal = 0x3483bd0;
 constexpr std::uint64_t kWorldGlobal = 0x3483b60;
-constexpr std::uint64_t kResidentsGlobal = 0x3561928;
+constexpr std::uint64_t kResidentsGlobal = layout::kPlayerManager;
 constexpr std::uint64_t kSlotsOffset = 0x50;
 constexpr std::uint64_t kFreeOffset = 0x6608;
 constexpr std::uint64_t kResidentDataOffset = 0x2a0;
@@ -181,7 +182,8 @@ void tick() {
         if (occupied + free != kSlots)
             NXLOG_W("pkp", "pokemon census: pool counters disagree (actors=%u free=%u capacity=64)", occupied, free);
     }
-    const bool details_needed = root_changed || periodic ||
+    // Rows only when something changed: 64 lines every 30 s would be log writes on the game thread for nothing.
+    const bool details_needed = root_changed ||
         (count_changed && (crossed(g.occupied, occupied, 25) || crossed(g.occupied, occupied, 32) ||
                            crossed(g.occupied, occupied, 33) || crossed(g.occupied, occupied, 40) ||
                            crossed(g.occupied, occupied, 50)));

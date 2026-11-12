@@ -81,6 +81,7 @@ bool after_syscall(uint64_t ip) {
 void flush_samples(State& s);
 
 void loop() {
+    log_set_thread_name("prof-sampler");
     State& s = st();
     const auto period = std::chrono::duration_cast<std::chrono::steady_clock::duration>(std::chrono::duration<double>(1.0 / s.hz));
     auto next = std::chrono::steady_clock::now() + period;

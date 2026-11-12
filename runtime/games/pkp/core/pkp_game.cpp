@@ -20,6 +20,7 @@
 #include "ui/pkp_options.h"
 #include "input/pkp_play.h"
 #include "render/pkp_quality.h"
+#include "core/pkp_pokemon_cap.h"
 #include "core/pkp_save_uuid.h"
 #include "core/pkp_pokemon_cap.h"
 #include "render/pkp_shoulder_camera.h"
@@ -77,7 +78,7 @@ constexpr Entry port(const Feature* f) { return {f, {settings::Key::Count, setti
 
 using enum settings::Key;
 constexpr Entry kEntries[] = {
-    port(&kSaveUuidFeature), port(&kLinkplayFeature), port(&kPlayFeature), port(&kPokemonCapFeature),  port(&kKbmFeature), port(&kModsNoticeFeature),
+    port(&kSaveUuidFeature), port(&kLinkplayFeature), port(&kPlayFeature), port(&kKbmFeature), port(&kModsNoticeFeature),
 #if NXRT_TESTTOOLS
     port(&kMovieTestFeature),
 #endif
@@ -88,7 +89,7 @@ constexpr Entry kEntries[] = {
 #endif
     port(&kShoulderCameraFeature),
     mod(&kJumpFeature, JumpMomentum), mod(&kAimFeature, CameraAim), port(&kAimDebugFeature), mod(&kTitleFeature, TitleQuit), mod(&kSortFeature, InventorySort),
-    mod(&kCraftFeature, CraftSearch), port(&key_guide::kKeyGuideFeature),
+    mod(&kCraftFeature, CraftSearch), mod(&kPokemonCapFeature, PokemonCap), port(&key_guide::kKeyGuideFeature),
     port(&kOptionsFeature),
 };
 constexpr size_t kFeatureCount = std::size(kEntries);

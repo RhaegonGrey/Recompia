@@ -49,6 +49,7 @@ HoldLink::HoldLink(std::shared_ptr<Link> inner, int hold_ms, size_t cap) : inner
     st_->cap = cap ? cap : 1;
     State* st = st_.get();
     st_->timer = std::thread([this, st] {
+        log_set_thread_name("vnet-timer");
         std::unique_lock<std::mutex> lk(st->mu);
         while (!st->stop) {
             if (st->due.empty()) {

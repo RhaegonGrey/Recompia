@@ -14,12 +14,15 @@
 //   play             play-mode hooks: aim, camera, display, menu pointer, F1 entries (play_game.h)            games/pkp/core/pkp_game.cpp
 //   prompts          the game's button icon textures (play/prompt_resolve.h, PromptGame)                      (Pokopia sets none)
 //   poll_sleeps      SleepThread calls inside the game's own polling loops, shortened (PollSleep below)        games/pkp/core/pkp_core.cpp
+//   poll_waits       SleepThread calls of polling loops that end when the polled value changes (PollWait below) games/pkp/core/pkp_core.cpp
 //   settings_doc     the keys of the game's own game-ini section, described (nxrt/setting_doc.h)              games/pkp/core/pkp_settings_table.cpp
 //   render           graphics facts: readback shape, camera block, tone-map shaders (nxrt/game_render.h)   games/pkp/render/pkp_render_info.cpp
 // The registry is header-only, so programs that do not link the runtime library (the launcher's tools) use it too.
 #pragma once
 #include <cstdint>
 #include <vector>
+
+struct Ctx;   // the guest CPU context (nxrecomp/ctx.h)
 
 namespace nxrt {
 namespace setting_doc { struct Row; }
@@ -40,6 +43,22 @@ struct Render;   // nxrt/game_render.h
 struct PollSleep {
     uint64_t ret = 0;
     int64_t ns = 0;
+};
+
+// One nn::os::SleepThread call that sits in a polling loop whose condition is a value in guest memory: the loop sleeps while the value
+// is still `idle` and goes on once it is not. `ret` is the return address of the call, as an offset in main. `watch` runs on the sleeping
+// thread at the start of every such sleep, with the thread's registers (the callee-saved ones are the loop's own), and names what this
+// round of the loop waits on; false: nothing to watch this time, the sleep runs its time. While [kernel] poll_wait is on the kernel ends
+// the sleep once the value has left `idle` (src/kernel/poll_wait.cpp), at the latest on its time: the loop then finds its condition true,
+// as it would have after the full sleep, so nothing but the waiting time changes. The value must stay changed until the loop has seen it.
+struct PollWatch {
+    uint64_t addr = 0;   // guest address of the value; mapped for as long as the loop polls it
+    uint64_t idle = 0;   // what it holds while the loop has nothing to do
+    uint8_t size = 0;    // 4 or 8 bytes
+};
+struct PollWait {
+    uint64_t ret = 0;
+    bool (*watch)(const ::Ctx& c, PollWatch* w) = nullptr;
 };
 
 // The console the game was built for. Switch 2 games run on the same Horizon model with a few platform facts that differ
@@ -80,6 +99,8 @@ struct Info {
     const play::PromptGame* prompts = nullptr;
     const PollSleep* poll_sleeps = nullptr;
     uint32_t poll_sleep_count = 0;
+    const PollWait* poll_waits = nullptr;
+    uint32_t poll_wait_count = 0;
     // The keys the game reads from its own sections of the game ini ([pkp]), one row each: the docs (runtime/docs/CONFIG.md) and the
     // launcher's schema of the game ini are generated from it (apps/settings_doc.cpp). Pure data: the pure-data library can set it.
     std::vector<setting_doc::Row> (*settings_doc)() = nullptr;

@@ -2,6 +2,7 @@
 // Gauges and the soak sampler (declared in nxrt/gauge.h).
 #include "nxrt/gauge.h"
 #include "host_probe.h"
+#include "thread_cpu.h"
 
 #include <windows.h>
 #include <psapi.h>
@@ -287,6 +288,7 @@ void monitor_run(double summary_s) {
                 }
             }
             diag::host_probe_tick(n > 0);
+            diag::thread_cpu_tick();
             const uint64_t window_frames = n - last_n;
             last_n = n;
             if (n > 0) seen_frames = true;
@@ -330,6 +332,7 @@ uint32_t thread_count() {
 }
 
 void run(double interval_s, double t0) {
+    log_set_thread_name("soak");
     Sampler& s = smp();
     uint64_t last_n = 0;
     for (;;) {

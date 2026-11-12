@@ -147,7 +147,7 @@ const char* build_stamp();
 std::array<uint8_t, 16> passphrase_hash(const void* p, size_t n);
 std::array<uint8_t, 32> sha256(const void* p, size_t n);
 
-// Room codes (same format as launcher/src-tauri/src/relay/room_code.rs): 16 symbols of Crockford base32 (80 bits), shown XXXX-XXXX-XXXX-XXXX.
+// Room codes (same format as launcher/relay/src/room_code.rs): 16 symbols of Crockford base32 (80 bits), shown XXXX-XXXX-XXXX-XXXX.
 constexpr size_t kRoomCodeLen = 16;
 // The 16 symbols of a typed code; false when it is not one. Case, '-' and spaces do not matter; O reads as 0, I and L as 1.
 bool room_code_normalize(const std::string& in, std::string* out);

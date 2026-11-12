@@ -13,9 +13,11 @@
 #include "nxrt/clock.h"
 #include "nxrt/dispatch.h"
 #include "nxrt/log.h"
+#include "nxrt/memory.h"
 #include "nxrt/module.h"
 #include "nxrt/nxmodule.h"
 #include "nxrt/svc.h"
+#include "../diag/hle_census.h"
 
 namespace nxrt {
 namespace {
@@ -40,6 +42,10 @@ void host_import(Ctx* c, uint32_t import_id) {
     }
     nxrt::detail::count_import();
     if (nxrt::HleFn leaf = nxrt::hle_leaf_fn(target)) {   // strlen and friends: tens of millions of calls in a boot, no bookkeeping
+        if (nxrt::diag::census::on()) [[unlikely]] {   // [diag] hle_census: a leaf thunk is counted here (it never reaches dispatch_call)
+            nxrt::diag::census::Scope scope(nxrt::diag::census::key(nxrt::diag::census::kHle, static_cast<uint32_t>((target - nxrt::mem::kHleBase) / 16)));
+            return leaf(c);
+        }
         leaf(c);
         return;
     }

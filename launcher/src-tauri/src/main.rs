@@ -34,7 +34,7 @@ mod profile_cmds;
 mod profiles;
 mod public_ip;
 mod readiness;
-mod relay;
+use pokopia_relay as relay;
 mod relay_cmds;
 mod repair;
 mod repair_cmds;

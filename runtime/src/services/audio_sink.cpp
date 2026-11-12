@@ -146,20 +146,25 @@ public:
         const double secs = config_get_double("audio", "stats_interval", 10.0);
         if (!(secs > 0.0)) return;
         interval_ = std::chrono::duration_cast<std::chrono::steady_clock::duration>(std::chrono::duration<double>(secs));
+        // [audio] stats_sample_ms: how often the queue depth is read for the line's average and min..max. The line is the only reader,
+        // so 10 readings a second describe a 10 s window as well as 100 did, for a tenth of the wake-ups.
+        sample_ = std::chrono::milliseconds(std::clamp<int64_t>(config_get_int("audio", "stats_sample_ms", 100), 1, 1000));
+        NXLOG_I("audio", "sink stats: a line every %.0f s from a queue reading every %lld ms ([audio] stats_sample_ms)", secs,
+                static_cast<long long>(sample_.count()));
         th_ = std::thread([this] { run(); });
     }
 
 private:
     void run() {
+        nxrt::log_set_thread_name("audio-stats");
         using Clock = std::chrono::steady_clock;
-        constexpr auto kSample = std::chrono::milliseconds(10);
         SinkStats last{};
         auto window_start = Clock::now();
         uint64_t sum = 0, samples = 0;
         uint32_t qmin = UINT32_MAX, qmax = 0;
         std::unique_lock<std::mutex> lk(mu_);
         while (!stop_) {
-            cv_.wait_for(lk, kSample, [this] { return stop_; });
+            cv_.wait_for(lk, sample_, [this] { return stop_; });
             if (stop_) break;
             lk.unlock();
             std::shared_ptr<AudioSink> s;
@@ -206,6 +211,7 @@ private:
     bool started_ = false;
     bool stop_ = false;
     std::chrono::steady_clock::duration interval_{};
+    std::chrono::milliseconds sample_{100};
 };
 StatsLogger g_stats_logger;
 }  // namespace

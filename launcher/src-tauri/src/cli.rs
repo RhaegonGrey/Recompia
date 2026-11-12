@@ -8,94 +8,37 @@ use std::sync::Arc;
 use crate::paths::exe_dir;
 use crate::{lan, play, relay};
 
-/// `--host [--listen <IPv4>[:<port>]] [--port N] [--no-udp] [limits] [--stats S] [--quiet]`: the relay alone, no window, log lines on stdout,
-/// until Ctrl+C. Listens on 0.0.0.0:47610 by default. The limits are pokopia-native's coop-relay options (--rooms --peers --links --per-ip
-/// --new-per-ip --nofind-per-min --room-hours --room-mib --link-kib --wait-s --idle-s). `--no-udp`: no relay UDP (game datagrams stay on the
-/// TCP links, as with pokopia-native's relay).
+/// `--host [options]`: the relay alone, no window, log lines on stdout, until Ctrl+C. Listens on 0.0.0.0:47610 by default. The options are
+/// the relay crate's (pokopia_relay::cli, shared with the standalone `pokopia-relay` server); `--no-udp`: no relay UDP (game datagrams stay
+/// on the TCP links, as with pokopia-native's relay).
 pub fn run_headless(args: &[String]) -> i32 {
     #[cfg(windows)]
     win_console::attach_and_hook_ctrl_c();
-    const USAGE: &str = "Usage: PokopiaLauncher --host [--listen <IPv4>[:<port>]] [--port N] [--no-udp] [--rooms N] [--peers N] [--links N] [--per-ip N] [--new-per-ip N] [--nofind-per-min N] [--room-hours H] [--room-mib M] [--link-kib K] [--wait-s S] [--idle-s S] [--stats S] [--quiet]";
-    let mut ip = std::net::Ipv4Addr::UNSPECIFIED;
-    let mut port = relay::DEFAULT_PORT;
-    let mut cfg = relay::Config::default();
-    let mut stats_s: u64 = 60;
-    let mut quiet = false;
-    let mut it = args.iter();
-    while let Some(a) = it.next() {
-        match a.as_str() {
-            "--host" => continue,
-            "--no-udp" => {
-                cfg.udp = false;
-                continue;
-            }
-            "--quiet" => {
-                quiet = true;
-                continue;
-            }
-            _ => {}
-        }
-        let Some(v) = it.next() else {
-            eprintln!("{} needs a value. {}", a, USAGE);
+    let mut a = match relay::cli::parse(args) {
+        Ok(a) => a,
+        Err(e) => {
+            eprintln!("{}", e);
+            eprintln!("Usage: PokopiaLauncher --host {}", relay::cli::OPTIONS);
             return 2;
-        };
-        if a == "--listen" {
-            let (h, p) = match v.split_once(':') {
-                Some((h, p)) => (h, Some(p)),
-                None => (v.as_str(), None),
-            };
-            match (h.parse::<std::net::Ipv4Addr>(), p.map(|p| p.parse::<u16>())) {
-                (Ok(h), None) => ip = h,
-                (Ok(h), Some(Ok(p))) => {
-                    ip = h;
-                    port = p;
-                }
-                _ => {
-                    eprintln!("--listen {}: <IPv4>[:<port>] wanted", v);
-                    return 2;
-                }
-            }
-            continue;
         }
-        let Ok(x) = v.parse::<u64>() else {
-            eprintln!("{} {}: a number >= 0 wanted", a, v);
-            return 2;
-        };
-        match a.as_str() {
-            "--port" if x <= 65535 => port = x as u16,
-            "--rooms" => cfg.max_rooms = x as usize,
-            "--peers" => cfg.max_peers = x as usize,
-            "--links" => cfg.max_conns = x as usize,
-            "--per-ip" => cfg.max_per_ip = x.min(i32::MAX as u64) as i32,
-            "--new-per-ip" => cfg.new_per_ip = x as i64,
-            "--nofind-per-min" => cfg.nofind_per_min = x as i64,
-            "--room-hours" => cfg.room_ms = x as i64 * 3600 * 1000,
-            "--room-mib" => cfg.room_bytes = x << 20,
-            "--link-kib" => cfg.link_bps = (x << 10) as i64,
-            "--wait-s" => cfg.wait_ms = x as i64 * 1000,
-            "--idle-s" => cfg.idle_ms = x as i64 * 1000,
-            "--stats" => stats_s = x,
-            _ => {
-                eprintln!("unknown argument {}. {}", a, USAGE);
-                return 2;
-            }
-        }
-    }
+    };
+    let quiet = a.quiet;
     let log: Arc<dyn Fn(&str) + Send + Sync> = Arc::new(move |line: &str| {
         if !quiet {
             println!("{}", line)
         }
     });
-    cfg.log = Some(log);
-    let mut srv = match relay::RelayServer::start((ip, port), cfg, stats_s) {
+    a.cfg.log = Some(log);
+    let mut srv = match relay::RelayServer::start(a.addr, a.cfg, a.stats_s) {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("cannot listen on {}:{}: {}", ip, port, e);
+            eprintln!("cannot listen on {}: {}", a.addr, e);
             return 1;
         }
     };
-    println!("Pokopia relay (pokopia-native coop-relay protocol) running on {}. Ctrl+C stops it.", srv.local_addr());
-    println!("Anyone who can reach this address can open rooms here; rooms are authenticated end to end by the players, but their traffic is not encrypted.");
+    let [running, open] = relay::cli::banner(srv.local_addr());
+    println!("{} Ctrl+C stops it.", running);
+    println!("{}", open);
     for line in lan::log_lines(&lan::report(), srv.local_addr().port()) {
         println!("{}", line);
     }

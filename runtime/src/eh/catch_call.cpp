@@ -7,6 +7,7 @@
 #include "eh_internal.h"
 #include "nxrt/dispatch.h"
 #include "nxrt/eh.h"
+#include "../diag/hle_census.h"
 
 extern "C" void nx_catch_call(Ctx* c, void (*body)(Ctx*, uint64_t)) {
     using namespace nxrt::eh::detail;
@@ -18,6 +19,7 @@ extern "C" void nx_catch_call(Ctx* c, void (*body)(Ctx*, uint64_t)) {
     const char* const saved_in_import = c->in_import;
     const uint64_t saved_import_from = c->import_from;
     const uint32_t saved_cb_flags = nxrt::host_callback_flags();   // a host bit set inside a guest callback the exception left
+    const uint32_t saved_census = nxrt::diag::census::depth();   // [diag] hle_census scopes the longjmp skips
     volatile uint64_t pad = 0;
     for (;;) {
         if (setjmp(rec.jb) == 0) {
@@ -29,6 +31,7 @@ extern "C" void nx_catch_call(Ctx* c, void (*body)(Ctx*, uint64_t)) {
         c->in_import = saved_in_import;
         c->import_from = saved_import_from;
         nxrt::host_callback_restore(saved_cb_flags);
+        nxrt::diag::census::restore(saved_census);
     }
     auto& st = catch_stack();
     for (size_t i = st.size(); i-- > 0;)

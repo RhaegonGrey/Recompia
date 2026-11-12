@@ -42,9 +42,32 @@ class GameConfig:
     # time-limit fallback (cmake/nx_cc_launcher.py) lowers it when a file still takes too long
     optnone_insns = 20000
 
+    # guest registers and NZCV in C locals of each lifted function, synced with the Ctx only where other code can see it
+    # (locals.py; `nxrecomp lift --locals off|exact|aapcs` overrides it for one run):
+    #   'off'    the eager code: every instruction loads and stores the Ctx
+    #   'exact'  at every call, return, tail exit and escape to the runtime the Ctx holds what the eager code stores there
+    #   'aapcs'  the same for registers; NZCV is not stored at calls and returns nor loaded after a call (AAPCS64 passes
+    #            no flags either way). Differs from 'exact' only where code reads flags across a call or a return, which
+    #            the lifter counts per module ("may see the entry flags", "may see a callee flags")
+    #   'lean'   the Ctx as 'exact' leaves it wherever code can look at it: NZCV is stored in front of a call / at a return
+    #            / at a tail exit and loaded after a call only where a summary of the whole module says that the callee
+    #            or a caller can read it; after a call only the registers that may be read again are loaded
+    reg_locals = 'off'
+
     # spin loops (spin.py): their head also calls nx_spin_hint(2), the runtime's spin hook (`lift --spin-yield` turns it on too).
     # Their loads are lifted as poll loads either way.
     spin_yield = False
+
+
+REG_LOCALS = ('off', 'exact', 'aapcs', 'lean')
+
+
+def reg_locals_mode(cfg, override=None):
+    """The locals mode of one lift: `override` (lift --locals) if given, else the game config's reg_locals; checked."""
+    mode = override or cfg.reg_locals
+    if mode not in REG_LOCALS:
+        raise ValueError('reg_locals: %r is not one of %s' % (mode, ' / '.join(REG_LOCALS)))
+    return mode
 
 
 def load_game(name):

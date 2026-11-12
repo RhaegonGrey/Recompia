@@ -2,7 +2,7 @@
 //! The relay on a thread of its own (the Link Play page's relay, and `--host`): engine.rs's single poll loop, a stop flag, the stats for the page.
 //! After pokopia-native (MIT) windows/tools/coop-relay/main.c @4a72d23 (its stats line).
 
-use super::engine::{Config, Relay, Stats};
+use crate::engine::{Config, Relay, Stats};
 use serde::Serialize;
 use std::io;
 use std::net::{SocketAddr, ToSocketAddrs};
@@ -29,7 +29,7 @@ pub struct RelayServer {
     stop: Arc<AtomicBool>,
     stats: Arc<Mutex<Stats>>,
     thread: Option<JoinHandle<()>>,
-    log: Option<super::engine::LogFn>,
+    log: Option<crate::engine::LogFn>,
 }
 
 impl RelayServer {

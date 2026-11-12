@@ -295,6 +295,7 @@ InputSnapshot read_input() {
 }
 
 void sampler_main(HidState* s) {
+    log_set_thread_name("hid-sampler");
     while (!s->stop.load()) {
         if (s->background.load() && s->resources.load() > 0) hid_sample_once();
         std::this_thread::sleep_for(std::chrono::milliseconds(5));

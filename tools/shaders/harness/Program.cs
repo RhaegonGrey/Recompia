@@ -20,6 +20,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Runtime;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
@@ -61,9 +62,15 @@ namespace SpirvHarness
             Debug = args.Contains("--debug-mode");
             // --out first: the launcher reads ErrorFile there when this run fails (under Proton stdout and stderr never reach it)
             string outDir = Opt(args, "--out", null);
+            // A crash on any thread (a worker of Parallel.ForEach included) still writes ErrorFile before the process goes.
+            AppDomain.CurrentDomain.UnhandledException += (_, e) => Fail(outDir, $"unhandled exception: {e.ExceptionObject}");
             try
             {
                 if (outDir != null) Directory.CreateDirectory(outDir);
+                ProgressDir = outDir;
+                Progress($"started: .NET {Environment.Version}, {(GCSettings.IsServerGC ? "server" : "workstation")} GC, " +
+                         $"{Environment.ProcessorCount} processors, {GC.GetGCMemoryInfo().TotalAvailableMemoryBytes >> 20} MiB for the GC; " +
+                         $"arguments: {string.Join(' ', args)}");
                 if (args.Length >= 2 && args[0] == "--batch") return Batch(args);
                 if (args.Length >= 2 && !args[0].StartsWith("-")) return Single(args);
             }
@@ -84,6 +91,27 @@ namespace SpirvHarness
 
         /// Written to --out when a run fails; the launcher puts it in setup.log.
         public const string ErrorFile = "harness_error.txt";
+
+        /// Written to --out as a run goes (start, blocks loaded, first block, every 500, done). A process that dies without a word
+        /// (killed, or a runtime fail-fast: #530 under Proton) leaves its last step here; the launcher puts the tail in setup.log.
+        public const string ProgressFile = "harness_progress.txt";
+        static string ProgressDir;
+        static readonly Stopwatch Started = Stopwatch.StartNew();
+        static readonly object ProgressLock = new();
+
+        static void Progress(string text)
+        {
+            if (ProgressDir == null) return;
+            try
+            {
+                lock (ProgressLock)
+                    File.AppendAllText(Path.Combine(ProgressDir, ProgressFile), $"{Started.Elapsed.TotalSeconds:F1} s  {text}\n");
+            }
+            catch (Exception)
+            {
+                // a progress note never stops a run
+            }
+        }
 
         // A failure to stderr, and (appended) to <out>/ErrorFile when there is an --out.
         static void Fail(string outDir, string text)
@@ -426,6 +454,7 @@ namespace SpirvHarness
             List<Job> jobs = LoadJobs(root);
             if (limit > 0) jobs = jobs.Take(limit).ToList();
             Console.WriteLine($"{jobs.Count} distinct code blocks, {jobsN} jobs, validation {(validate ? targetEnv : "off")}");
+            Progress($"{jobs.Count} blocks loaded, {jobsN} jobs");
 
             ConcurrentBag<Result> results = new();
             int done = 0;
@@ -457,7 +486,12 @@ namespace SpirvHarness
                 }
                 results.Add(r);
                 int n = Interlocked.Increment(ref done);
-                if (n % 500 == 0) Console.WriteLine($"  {n}/{jobs.Count}  {total.Elapsed.TotalSeconds:F0} s");
+                if (n == 1) Progress($"first block done ({r.Status})");
+                if (n % 500 == 0)
+                {
+                    Console.WriteLine($"  {n}/{jobs.Count}  {total.Elapsed.TotalSeconds:F0} s");
+                    Progress($"{n}/{jobs.Count}");
+                }
             });
 
             List<Result> all = results.OrderBy(r => r.Group).ThenBy(r => r.Hash).ToList();
@@ -465,6 +499,7 @@ namespace SpirvHarness
             string summary = Summarize(all, total.Elapsed, targetEnv);
             File.WriteAllText(Path.Combine(outDir, "summary.txt"), summary);
             Console.Write(summary);
+            Progress($"done: {all.Count} blocks");
             return 0;
         }
 

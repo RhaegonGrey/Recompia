@@ -8,15 +8,20 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <condition_variable>
 #include <cstring>
+#include <deque>
+#include <mutex>
 #include <thread>
 
 #include "nxrt/config.h"
+#include "nxrt/frame_limiter.h"
 #include "nxrt/ftrace.h"
 #include "nxrt/gfx.h"
 #include "nxrt/log.h"
 #include "nxrt/lowlat.h"
 #include "nxrt/platform.h"
+#include "nxrt/present_timing.h"
 #include "nxrt/text.h"
 #include "extras/hdr_capture.h"
 #include "extras/hdr_math.h"
@@ -203,15 +208,17 @@ struct Renderer::Impl {
 
     // latency probe (S18): with the frame trace on, the present submission also signals a timeline semaphore and a watcher thread
     // marks "lat.gpudone" (arg = frame id) when the GPU has finished that frame's present command buffer (and so, in queue order, the frame).
+    // The same watcher gives present_timing.h its GPU-done time (e) of each recorded frame.
     VkSemaphore probe_sem = VK_NULL_HANDLE;
     uint64_t probe_next = 0;
     uint64_t probe_ids[256] = {};
+    uint64_t probe_frames[256] = {};          // present_timing frame of each value (0: none)
     std::thread probe_th;
     std::atomic<bool> probe_stop{false};
     std::atomic<uint64_t> probe_published{0};
 
     void probe_init() {
-        if (probe_sem || headless || !ft::on()) return;
+        if (probe_sem || headless || !(ft::on() || extras::present_timing_on())) return;
         VkSemaphoreTypeCreateInfo tci = {VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO};
         tci.semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE;
         VkSemaphoreCreateInfo ci = {VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO, &tci};
@@ -229,7 +236,8 @@ struct Renderer::Impl {
                 wi.pValues = &v;
                 if (vkWaitSemaphores(vk(), &wi, 50ull * 1000 * 1000) != VK_SUCCESS) continue;
                 const uint64_t t = ft::now_ns();
-                ft::event(z, t, t, static_cast<uint32_t>(probe_ids[v % 256]));
+                if (ft::on()) ft::event(z, t, t, static_cast<uint32_t>(probe_ids[v % 256]));
+                if (const uint64_t f = probe_frames[v % 256]) extras::present_timing_gpu_done(f, t);
                 ++v;
             }
         });
@@ -237,6 +245,78 @@ struct Renderer::Impl {
     void probe_stop_join() {
         if (probe_th.joinable()) { probe_stop.store(true); probe_th.join(); }
         if (probe_sem) { vkDestroySemaphore(vk(), probe_sem, nullptr); vk_gauge_semaphores().sub(1); probe_sem = VK_NULL_HANDLE; }
+    }
+
+    // Present waiter (present_timing.h, with VK_KHR_present_wait): every present of a recorded frame carries a present id; this thread waits
+    // for each in turn and reports when it reached the screen (f). It waits in steps of 8 ms holding pw_wait_mu, which recreate() and
+    // destroy_all() take before the swapchain it waits on is retired (pw_live is then another handle or null and the entry is dropped).
+    struct PwEntry {
+        VkSwapchainKHR sc = VK_NULL_HANDLE;
+        uint64_t id = 0, frame = 0, queued_ns = 0;
+    };
+    bool pw_on = false, pw_started = false;
+    uint64_t pw_next_id = 0;                  // render thread: the last present id given out
+    std::mutex pw_mu;                         // pw_q, pw_stop
+    std::condition_variable pw_cv;
+    std::deque<PwEntry> pw_q;
+    bool pw_stop = false;
+    std::mutex pw_wait_mu;                    // held during vkWaitForPresentKHR; guards pw_live
+    VkSwapchainKHR pw_live = VK_NULL_HANDLE;
+    std::thread pw_th;
+
+    void pw_init() {
+        if (pw_started) return;
+        pw_started = true;
+        pw_on = !headless && dev->features().present_wait && extras::present_timing_on();
+        extras::present_timing_set_waiter(pw_on);
+        if (!pw_on) return;
+        {
+            std::lock_guard<std::mutex> wl(pw_wait_mu);
+            pw_live = swapchain;
+        }
+        pw_th = std::thread([this] {
+            log_set_thread_name("present-wait");
+            for (;;) {
+                PwEntry e;
+                {
+                    std::unique_lock<std::mutex> lk(pw_mu);
+                    pw_cv.wait(lk, [&] { return pw_stop || !pw_q.empty(); });
+                    if (pw_stop) return;
+                    e = pw_q.front();
+                }
+                VkResult r;
+                {
+                    std::lock_guard<std::mutex> wl(pw_wait_mu);
+                    r = e.sc == pw_live ? vkWaitForPresentKHR(vk(), e.sc, e.id, 8ull * 1000 * 1000) : VK_ERROR_OUT_OF_DATE_KHR;
+                }
+                const uint64_t t = FrameLimiter::now_ns();
+                if (r == VK_SUCCESS || r == VK_SUBOPTIMAL_KHR) extras::present_timing_shown(e.frame, t);
+                else if (r == VK_TIMEOUT && t - e.queued_ns < 500ull * 1000 * 1000) continue;    // not on the screen yet
+                std::lock_guard<std::mutex> lk(pw_mu);
+                if (!pw_q.empty() && pw_q.front().id == e.id) pw_q.pop_front();
+            }
+        });
+    }
+    void pw_stop_join() {
+        if (!pw_th.joinable()) return;
+        {
+            std::lock_guard<std::mutex> lk(pw_mu);
+            pw_stop = true;
+        }
+        pw_cv.notify_all();
+        pw_th.join();
+    }
+    void pw_set_live(VkSwapchainKHR sc) {
+        std::lock_guard<std::mutex> wl(pw_wait_mu);
+        pw_live = sc;
+    }
+    void pw_push(VkSwapchainKHR sc, uint64_t id, uint64_t frame) {
+        {
+            std::lock_guard<std::mutex> lk(pw_mu);
+            pw_q.push_back({sc, id, frame, FrameLimiter::now_ns()});
+            while (pw_q.size() > 16) pw_q.pop_front();      // the waiter fell behind (a stalled compositor): only the latest are timed
+        }
+        pw_cv.notify_one();
     }
 
     VkDevice vk() const { return dev->device(); }
@@ -473,6 +553,7 @@ struct Renderer::Impl {
         if (caps.maxImageCount) images = std::min(images, caps.maxImageCount);
 
         VkSwapchainKHR old = swapchain;
+        pw_set_live(VK_NULL_HANDLE);      // the present waiter lets go of the swapchain before it is retired
         VkSwapchainCreateInfoKHR ci = {VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR};
         ci.surface = surf;
         ci.minImageCount = images;
@@ -504,6 +585,7 @@ struct Renderer::Impl {
             return false;
         }
         swapchain = fresh;
+        pw_set_live(fresh);
         set_kind(got, chosen.colorSpace, chosen.format);
         extent = ext;
         if (latency) latency->swapchain_created(swapchain);
@@ -577,6 +659,7 @@ struct Renderer::Impl {
 
     void destroy_all() {
         dev->wait_idle();
+        pw_stop_join();
         probe_stop_join();
         for (auto& s : slots) {
             if (s.queries) { vkDestroyQueryPool(vk(), s.queries, nullptr); vk_gauge_query_pools().sub(1); }
@@ -798,13 +881,22 @@ void Renderer::end_frame(SubmitPrefix* prefix) {
     // low latency markers go outside the queue lock (they take it themselves: the validation layer wants calls on one swapchain from different threads apart)
     uint64_t present_id = 0;
     uint64_t probe_value = 0;
+    const uint64_t pt_frame = s.headless ? 0 : extras::present_timing_render_frame();   // present_timing.h record of this frame (0: none)
+    bool pw_wait = false;
     if (!s.headless && s.latency) {
         const uint64_t id = s.latency->present_begin();
         if (s.latency->enabled() && s.latency->backend() == extras::LowLatency::Backend::Reflex) present_id = id;
+        s.pw_init();
+        if (s.pw_on) {      // ids increase per swapchain; a Reflex id is used as it is (its markers carry it)
+            if (!present_id && pt_frame) present_id = s.pw_next_id + 1;
+            s.pw_next_id = std::max(s.pw_next_id, present_id);
+            pw_wait = pt_frame && present_id;
+        }
         s.probe_init();
         if (s.probe_sem) {
             probe_value = ++s.probe_next;
             s.probe_ids[probe_value % 256] = s.latency->present_sim_id();
+            s.probe_frames[probe_value % 256] = pt_frame;
             VkSemaphoreSubmitInfo& pr = signals[si.signalSemaphoreInfoCount++];
             pr = {VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO};
             pr.semaphore = s.probe_sem;
@@ -818,7 +910,7 @@ void Renderer::end_frame(SubmitPrefix* prefix) {
     // Off (no queue): the job runs right here, as before.
     auto job = [&s, cbs = std::move(cbs), si, wait, sigs = std::vector<VkSemaphoreSubmitInfo>(signals, signals + si.signalSemaphoreInfoCount),
                 fence = slot.fence, render_done = t.render_done, swapchain = s.swapchain, image = s.cur_image, present_id, probe_value, split_n, pre_sig,
-                after = prefix ? prefix->after_submit : std::function<void(bool)>{}, prefix_sync = s.submit_queue ? nullptr : prefix]() mutable {
+                pt_frame, pw_wait, fifo = s.active == PresentMode::Fifo, after = prefix ? prefix->after_submit : std::function<void(bool)>{}, prefix_sync = s.submit_queue ? nullptr : prefix]() mutable {
         VkSubmitInfo2 subs[2] = {};
         uint32_t nsub = 0;
         if (split_n) {
@@ -836,10 +928,44 @@ void Renderer::end_frame(SubmitPrefix* prefix) {
         sub.pWaitSemaphoreInfos = sub.waitSemaphoreInfoCount ? &wait : nullptr;
         sub.pSignalSemaphoreInfos = sigs.data();
         bool ok = false;
+        uint64_t q0 = 0, q1 = 0, held = 0;        // present_timing.h (d): the vkQueuePresentKHR call, and how long it was held
+        bool presented = false;
+        // [latency] vblank_lock: an early frame's present waits until just after the vblank before its slot (FIFO cannot show it before the
+        // slot then); the submit goes first, the queue lock is not held while waiting
+        const uint64_t hold_until = pt_frame && !s.headless ? extras::present_timing_hold_until(pt_frame, fifo) : 0;
+        auto queue_present = [&] {      // under the queue lock
+            static const uint16_t z_vpres = ft::zone_id("present.vk_present");
+            VkPresentInfoKHR pi = {VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
+            pi.waitSemaphoreCount = 1;
+            pi.pWaitSemaphores = &render_done;
+            pi.swapchainCount = 1;
+            pi.pSwapchains = &swapchain;
+            pi.pImageIndices = &image;
+            VkPresentIdKHR pid = {VK_STRUCTURE_TYPE_PRESENT_ID_KHR};
+            if (present_id) {
+                pid.swapchainCount = 1;
+                pid.pPresentIds = &present_id;
+                pi.pNext = &pid;
+            }
+            const uint64_t ft0 = ft::on() ? ft::now_ns() : 0;
+            if (pt_frame) q0 = FrameLimiter::now_ns();
+            const VkResult r = vkQueuePresentKHR(s.dev->queue(), &pi);
+            if (pt_frame) q1 = FrameLimiter::now_ns();
+            if (ft0) ft::event(z_vpres, ft0, ft::now_ns());
+            s.dev->note_result(r, "vkQueuePresentKHR");
+            s.st.presents++;
+            presented = r == VK_SUCCESS || r == VK_SUBOPTIMAL_KHR;
+            if (r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_SUBOPTIMAL_KHR || r == VK_ERROR_SURFACE_LOST_KHR) {
+                s.dirty = true;
+                s.st.out_of_date++;
+            } else if (r != VK_SUCCESS && !s.dev->device_lost()) {
+                NXLOG_E(kTag, "vkQueuePresentKHR failed (%d)", static_cast<int>(r));
+            }
+        };
         {
             std::lock_guard<std::mutex> lk(s.dev->queue_mutex());
-            static const uint16_t z_vsub = ft::zone_id("present.vk_submit"), z_vpres = ft::zone_id("present.vk_present");
-            uint64_t ft0 = ft::on() ? ft::now_ns() : 0;
+            static const uint16_t z_vsub = ft::zone_id("present.vk_submit");
+            const uint64_t ft0 = ft::on() ? ft::now_ns() : 0;
             VkResult r = vkQueueSubmit2(s.dev->queue(), nsub, subs, fence);
             // arg = command buffers in the call (the NVN batch and, with [nvn] one_submit, the parked flushes ride in it)
             if (ft0) ft::event(z_vsub, ft0, ft::now_ns(), static_cast<uint32_t>(cbs.size()));
@@ -853,31 +979,21 @@ void Renderer::end_frame(SubmitPrefix* prefix) {
             ok = r == VK_SUCCESS;
             if (prefix_sync) prefix_sync->submitted = ok;
             if (after) after(ok);
-            if (r == VK_SUCCESS && !s.headless) {
-                VkPresentInfoKHR pi = {VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
-                pi.waitSemaphoreCount = 1;
-                pi.pWaitSemaphores = &render_done;
-                pi.swapchainCount = 1;
-                pi.pSwapchains = &swapchain;
-                pi.pImageIndices = &image;
-                VkPresentIdKHR pid = {VK_STRUCTURE_TYPE_PRESENT_ID_KHR};
-                if (present_id) {
-                    pid.swapchainCount = 1;
-                    pid.pPresentIds = &present_id;
-                    pi.pNext = &pid;
-                }
-                ft0 = ft::on() ? ft::now_ns() : 0;
-                r = vkQueuePresentKHR(s.dev->queue(), &pi);
-                if (ft0) ft::event(z_vpres, ft0, ft::now_ns());
-                s.dev->note_result(r, "vkQueuePresentKHR");
-                s.st.presents++;
-                if (r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_SUBOPTIMAL_KHR || r == VK_ERROR_SURFACE_LOST_KHR) {
-                    s.dirty = true;
-                    s.st.out_of_date++;
-                } else if (r != VK_SUCCESS && !s.dev->device_lost()) {
-                    NXLOG_E(kTag, "vkQueuePresentKHR failed (%d)", static_cast<int>(r));
-                }
+            if (ok && !s.headless && !hold_until) queue_present();
+        }
+        if (ok && !s.headless && hold_until) {
+            const uint64_t h0 = FrameLimiter::now_ns();
+            {
+                NXFT("present.hold");
+                FrameLimiter::sleep_until(hold_until);
             }
+            held = FrameLimiter::now_ns() - h0;
+            std::lock_guard<std::mutex> lk(s.dev->queue_mutex());
+            queue_present();
+        }
+        if (presented && pt_frame) {
+            extras::present_timing_queue_present(pt_frame, held, q0, q1);
+            if (pw_wait) s.pw_push(swapchain, present_id, pt_frame);
         }
         if (!s.headless && s.latency) s.latency->present_end();
     };

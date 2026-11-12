@@ -391,8 +391,6 @@ void do_dispatch(uint32_t x, uint32_t y, uint32_t z, uint64_t indirect) {
     const ShaderInfo* stages[6] = {nullptr, nullptr, nullptr, nullptr, nullptr, cs};
     const ProgLayout* pl = prog_layout(stages);
     if (!pl) return;
-    ResolveScope rs_;
-    rs_.arm(pl);
     prepare_textures(*pl);
     end_pass();
     if (g_trace) trace_dispatch_bindings(*pl);

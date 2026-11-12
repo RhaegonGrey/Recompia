@@ -13,9 +13,6 @@ inline CONDITION_VARIABLE* thread_cv(KThread& t) { return reinterpret_cast<CONDI
 void sync_reset();                       // forget every wait queue (kernel_sync.cpp)
 void thread_mark_exited(KThread& t);     // marks exited under the kernel lock and wakes WaitSynchronization waiters (kernel_sync.cpp)
 extern SRWLOCK g_k;                      // the "kernel lock": wait queues and wait state of every thread
-// Blocks the calling thread on its own condition variable with g_k held until t.wake or the deadline (ns, < 0 = forever).
-bool block_on_wake(KThread& t, int64_t timeout_ns);
-void wake_thread(KThread& t, uint32_t result = 0);   // g_k held
 // The set_blocked_hook function when the calling thread is the one it names, else null (kernel_sync.cpp).
 void (*blocked_hook_here())();
 // The sleep of the yield back-off: always the high-resolution timer, never the yield loop sleep_ns uses for spans up to

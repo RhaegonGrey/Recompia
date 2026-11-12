@@ -1,4 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+//! The relay crate: the launcher's "Run a relay here" and `--host`, and the standalone `pokopia-relay` server binary (src/main.rs).
+//!
 //! Based on pokopia-native (MIT) windows/tools/coop-relay/coop_relay.h @4a72d23: the Link Play relay ("pkp host"), a Rust port of
 //! pokopia-native's coop-relay, the meeting point for internet play when the host cannot forward a port. Game builds with `[net] relay` set
 //! (ours and pokopia-native's) all dial out to it.
@@ -36,6 +38,7 @@
 //!   the room's byte budget. The payload is the players' own tagged datagram (PCU3: token, sequence number, HMAC tag), checked end to end.
 //! - The clients also agree end to end, over their tagged link (frame type 0xC5), before either sends game datagrams this way.
 
+pub mod cli;
 mod engine;
 mod poll;
 pub mod room_code;
