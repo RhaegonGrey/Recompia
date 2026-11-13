@@ -1,7 +1,9 @@
+// SPDX-FileCopyrightText: Copyright 2026 Eglantine contributors
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Pokopia v2.0.1a resident limit and active-appearance budget (gameplay mod pokemon_cap_50; the registry installs it only while on).
-// Ported from the Eglantine cap's default (non-staged) behavior. The game still has 64 actor slots, which is also the configured resident
-// maximum.
+// Native-recomp port of Eglantine's Pokopia resident/object/active caps.
+// Keep the legacy [pkp] pokemon_cap_50 toggle for launcher compatibility.
+// The experimental staged-fill mode was not ported: the supplied implementation
+// reports that no extra Pokemon appear when attempting to fill during play.
 #include "core/pkp_pokemon_cap.h"
 #include "core/pkp_resident_census.h"
 
@@ -15,23 +17,48 @@
 namespace nxrt::games::pkp {
 namespace {
 
-constexpr std::uint64_t kPokemonParamsRoot = 0x36ca678;  // global in main: -> holder; holder+0x20 -> resident parameter object
+constexpr std::uint64_t kParamsRoot = 0x36ca678;
 constexpr std::uint64_t kParamsLink = 0x20;
 constexpr std::uint64_t kLivingOffset = 0x4bc;
 constexpr std::uint64_t kObjectsOffset = 0x4c0;
-constexpr std::uint64_t kActiveField = 0;    // [holder+0]: active budget block
-constexpr std::uint64_t kActiveBudget = 0xc; // u32, original 30
-constexpr std::uint32_t kOriginalLiving = 25;
-constexpr std::uint32_t kOriginalObjects = 30;
+constexpr std::uint64_t kActiveLink = 0;
+constexpr std::uint64_t kActiveBudget = 0xc;
+constexpr std::uint32_t kNativeLiving = 25;
+constexpr std::uint32_t kNativeObjects = 30;
 constexpr std::uint32_t kPoolSize = 64;
-constexpr std::uint32_t kMaximumLiving = 64;
-constexpr std::uint32_t kVisitorHeadroom = 14; // the remaining slots with 50 residents
+constexpr std::uint32_t kMaxResidentCap = 63;
+constexpr std::uint32_t kVisitorHeadroom = 14;
+constexpr std::uint32_t kDefaultCap = 30;
+
+// All three caps matter. Never reduce limits once Pokemon are admitted:
+// lowering the living cap can permanently send existing residents away.
+struct Limits {
+    std::uint32_t living;
+    std::uint32_t objects;
+    std::uint32_t active;
+};
+constexpr Limits plan(std::uint32_t living, std::uint32_t objects,
+                      std::uint32_t active, std::uint32_t requested) {
+    const auto residents = std::max(living, std::clamp(requested, kNativeLiving, kMaxResidentCap));
+    // Fifty residents leave fourteen of the fixed sixty-four slots for visitors;
+    // higher values allow less room. Twenty-five keeps the game's own limits.
+    const auto with_visitors = residents == kNativeLiving
+        ? kNativeObjects : std::min(kPoolSize, residents + kVisitorHeadroom);
+    const auto all_objects = std::max(objects, std::max(residents, with_visitors));
+    return {residents, all_objects, std::max(active, all_objects)};
+}
+static_assert(plan(25, 30, 30, 25).living == 25 && plan(25, 30, 30, 25).objects == 30);
+static_assert(plan(25, 30, 30, 30).living == 30 && plan(25, 30, 30, 30).objects == 44);
+static_assert(plan(25, 30, 30, 50).objects == 64 && plan(25, 30, 30, 50).active == 64);
+static_assert(plan(25, 30, 30, 63).living == 63 && plan(25, 30, 30, 63).objects == 64);
+static_assert(plan(60, 64, 64, 30).living == 60);
+static_assert(plan(64, 64, 64, 63).living == 64);
 
 struct State {
     std::uint64_t base = 0;
     std::uint64_t params = 0;
     std::uint64_t active_block = 0;
-    std::uint32_t requested = 31;
+    std::uint32_t requested = kDefaultCap;
     bool limits_reported = false;
     bool active_reported = false;
     bool warned_layout = false;
@@ -41,16 +68,15 @@ State g;
 
 void game_frame(::Ctx*) {
     if (!g.base) return;
+    // Reuse the existing read-only 64-slot pool census and resident diagnostics.
     resident_census::tick();
 
-    // Pointers are guest-mapped addresses, not native process offsets.
-    const auto global = g.base + kPokemonParamsRoot;
+    const auto global = g.base + kParamsRoot;
     if (!guest::ok(global, sizeof(std::uint64_t))) return;
     const auto holder = guest::rd<std::uint64_t>(global);
     if (!guest::ok(holder, kParamsLink + sizeof(std::uint64_t))) return;
     const auto params = guest::rd<std::uint64_t>(holder + kParamsLink);
     if (!guest::ok(params, kObjectsOffset + sizeof(std::uint32_t))) return;
-
     if (params != g.params) {
         g.params = params;
         g.limits_reported = false;
@@ -59,9 +85,9 @@ void game_frame(::Ctx*) {
 
     const auto living = guest::rd<std::uint32_t>(params + kLivingOffset);
     const auto objects = guest::rd<std::uint32_t>(params + kObjectsOffset);
-    // Never interpret an unknown layout or not-yet-initialized parameter as a cap.
-    if (living < kOriginalLiving || living > kMaximumLiving ||
-        objects < kOriginalObjects || objects > kPoolSize) {
+    // Game-specific v2.0.1a offsets. Uninitialized/unrecognized layouts are untouched.
+    if (living < kNativeLiving || living > kPoolSize ||
+        objects < kNativeObjects || objects > kPoolSize || objects < living) {
         if ((living || objects) && !g.warned_layout) {
             NXLOG_W("pkp", "pokemon cap: unexpected limits %u living / %u objects; untouched",
                     living, objects);
@@ -70,23 +96,20 @@ void game_frame(::Ctx*) {
         return;
     }
 
-    // Eglantine's parameter forcing with object headroom bounded by the pool:
-    // never lower a previously admitted population during the same session.
-    const auto target_living = std::max(g.requested, living);
-    const auto desired_objects = std::max(objects, target_living + kVisitorHeadroom);
-    const auto target_objects = std::min(kPoolSize, desired_objects);
-    if (living != target_living)
-        guest::wr<std::uint32_t>(params + kLivingOffset, target_living);
-    if (objects != target_objects)
-        guest::wr<std::uint32_t>(params + kObjectsOffset, target_objects);
+    const auto target = plan(living, objects, 0, g.requested);
+    if (living != target.living)
+        guest::wr<std::uint32_t>(params + kLivingOffset, target.living);
+    if (objects != target.objects)
+        guest::wr<std::uint32_t>(params + kObjectsOffset, target.objects);
     if (!g.limits_reported) {
-        NXLOG_I("pkp", "pokemon cap: applied %u living / %u objects (previous %u/%u; pool capacity 64)",
-                target_living, target_objects, living, objects);
+        NXLOG_I("pkp", "pokemon cap: %u residents / %u objects (was %u/%u; pool 64)",
+                target.living, target.objects, living, objects);
         g.limits_reported = true;
     }
 
-    // The separate active-appearance budget: the original 30-budget keeper parks excess actors out of the scene.
-    const auto block = guest::rd<std::uint64_t>(holder + kActiveField);
+    // The independent active-appearance keeper originally holds only 30 actors.
+    // Without raising it, distant residents are parked offscreen.
+    const auto block = guest::rd<std::uint64_t>(holder + kActiveLink);
     if (block != g.active_block) {
         g.active_block = block;
         g.active_reported = false;
@@ -101,12 +124,11 @@ void game_frame(::Ctx*) {
         }
         return;
     }
-    const auto target_active = std::max(active, target_objects);
-    if (active != target_active)
-        guest::wr<std::uint32_t>(block + kActiveBudget, target_active);
+    const auto wanted_active = std::max(active, target.active);
+    if (active != wanted_active)
+        guest::wr<std::uint32_t>(block + kActiveBudget, wanted_active);
     if (!g.active_reported) {
-        NXLOG_I("pkp", "pokemon cap: active budget %u -> %u (pool capacity 64)",
-                active, target_active);
+        NXLOG_I("pkp", "pokemon cap: active budget %u -> %u", active, wanted_active);
         g.active_reported = true;
     }
 }
@@ -114,9 +136,14 @@ void game_frame(::Ctx*) {
 void install(const FeatureInstall& in) {
     g = {};
     g.base = in.base;
-    g.requested = static_cast<std::uint32_t>(settings::get_int(settings::Key::PokemonCapLimit));
+    g.requested = static_cast<std::uint32_t>(
+        std::clamp<std::int64_t>(settings::get_int(settings::Key::PokemonCapLimit),
+                                 kNativeLiving, kMaxResidentCap));
     resident_census::start(in.base);
-    NXLOG_I("pkp", "pokemon cap: requested %u living (physical actor pool: 64)", g.requested);
+    NXLOG_I("pkp", "pokemon cap: requested %u (native 25; pool 64)", g.requested);
+    if (g.requested > 50)
+        NXLOG_W("pkp", "pokemon cap: %u residents leave at most %u slots for visitors",
+                g.requested, kPoolSize - g.requested);
 }
 
 void remove() {
