@@ -315,7 +315,7 @@ const GAMEPLAY = {
   },
   pokemon_cap_50: {
     label: t('More Pokémon in town'),
-    after: [{ id: 'pokemon_cap_note', type: 'note', when: isOn('pokemon_cap_50'), note: () => ({ text: t('Experimental. Visitors and temporary spawns share the game\'s 64 slots with your residents, so a high number leaves them less room.') }) }],
+    after: [{ id: 'pokemon_cap_note', type: 'note', when: isOn('pokemon_cap_50'), note: () => ({ text: t('Experimental. The 64 actor slots are shared by residents and visitors; 50 residents leaves 14 slots for visitors. Above 50, visitor space is limited.') }) }],
   },
   pokemon_cap_limit: { label: t('Pokémon in town'), options: (k) => Array.from({ length: k.max - k.min + 1 }, (_, n) => n + k.min).map((n) => ({ value: String(n), label: num(n) })) },
 };

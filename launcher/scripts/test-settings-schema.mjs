@@ -97,6 +97,14 @@ for (const key of mods) {
   }
 }
 
+// Pokémon cap is a selectable gameplay mod and must stay within the 64-slot pool.
+const capSpec = schemaKey({ file: 'pkp', section: 'pkp', key: 'pokemon_cap_limit' });
+const capOptions = FIELDS.pokemon_cap_limit?.options?.map((o) => Number(o.value)) ?? [];
+check(FIELDS.pokemon_cap_50?.type === 'toggle', 'Pokemon cap must have a launcher toggle');
+check(capSpec?.default === '30' && capSpec?.min === 25 && capSpec?.max === 63,
+  'Pokemon cap range/default must be 25..63 / 30');
+check(capOptions.length === 39 && capOptions.every((v, i) => v === 25 + i),
+  'Pokemon cap selector must cover all values from 25 to 63');
 check(keys > 10, `only ${keys} keys checked`);
 console.log(bad ? `${bad} failed` : `settings schema: ${keys} keys ok`);
 process.exit(bad ? 1 : 0);

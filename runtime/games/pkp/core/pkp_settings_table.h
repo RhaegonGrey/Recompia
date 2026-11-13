@@ -97,9 +97,9 @@ inline constexpr Spec kSpecs[] = {
     opt_in(gameplay(b(CraftSearch, "craft_search", false, "A Search button in the crafting screen's key guide."))),
     opt_in(gameplay(b(ItemEditor, "item_editor", false, "Experimental: an Items tab in the game's Settings screen that changes the count of a stack in the bag."))),
     hidden(gameplay(b(TitleQuit, "title_quit", true, "A Quit Game key guide on the title screen."))),
-    gameplay(b(PokemonCap, "pokemon_cap_50", true, "Experimental: more Pokemon can live in the town than the game's 25 (pokemon_cap_limit).")),
-    under(PokemonCap, i(PokemonCapLimit, "pokemon_cap_limit", 31, 25, 64,
-                        "With pokemon_cap_50: how many Pokemon can live in the town; visitors and spawns share the game's 64 actor slots.")),
+    gameplay(b(PokemonCap, "pokemon_cap_50", true, "Experimental: raise the resident, object and active Pokemon limits beyond the game's 25 (pokemon_cap_limit).")),
+    under(PokemonCap, i(PokemonCapLimit, "pokemon_cap_limit", 30, 25, 63,
+                        "With pokemon_cap_50: choose 25 to 63 residents (30 default; 50 leaves 14 slots for visitors); the actor pool has 64 slots.")),
     b(OptionsMenu, "options_menu", true, "The PC settings as tabs and rows of the game's own Settings screen."),
     s(EventsFile, "events_file", "pokopia_events.tsv", "", "The Events tab's list: one event per line, start date, end date and name, separated by tabs."),
 };
